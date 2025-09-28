@@ -1,24 +1,23 @@
 // js/terminal.js
 
-// Această funcție este exportată pentru a fi chemată de bootloader după ce termină.
+import { kernel } from './kernel.js';
+
 export function initializeTerminal() {
-    // --- ELEMENTE DOM ---
     const container = document.getElementById('container');
     const output = document.getElementById('terminal-output');
     const input = document.getElementById('terminal-input');
     const promptElement = document.getElementById('prompt');
 
-    // --- STAREA TERMINALULUI ---
     const commandHistory = [];
     let historyIndex = -1;
     let currentPath = '.';
 
-    // --- LISTA DE COMENZI ---
-    const availableCommands = ['help', 'clear', 'echo', 'date', 'ls', 'cat', 'cd', 'mkdir', 'touch', 'rm', 'mv'];
+    // Adăugăm 'ps' la comenzi
+    const availableCommands = ['help', 'clear', 'echo', 'date', 'ls', 'cat', 'cd', 'mkdir', 'touch', 'rm', 'mv', 'ps'];
 
-    // --- FUNCȚII UTILITARE ---
     function logToTerminal(message) {
-        output.innerHTML += `<p>${message}</p>`;
+        // Folosim pre-wrap pentru a menține spațiile multiple (utile pentru 'ps')
+        output.innerHTML += `<p style="white-space: pre-wrap;">${message}</p>`;
         output.scrollTop = output.scrollHeight;
     }
 
@@ -44,7 +43,6 @@ export function initializeTerminal() {
         return newPath === '' ? '.' : newPath;
     }
 
-    // --- LOGICA COMENZILOR ---
     const commands = {
         help: () => logToTerminal(`Available commands: ${availableCommands.join(', ')}`),
         clear: () => output.innerHTML = '',
@@ -53,114 +51,64 @@ export function initializeTerminal() {
 
         ls: async (args) => {
             const path = args[0] ? resolveClientPath(args[0]) : currentPath;
-            try {
-                const response = await fetch(`http://localhost:3000/api/files?path=${encodeURIComponent(path)}`);
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error);
-                logToTerminal(data.join('  '));
-            } catch (error) {
-                logToTerminal(error.message);
-            }
+            const data = await kernel.syscall('fs.readDir', { path });
+            logToTerminal(data.join('  '));
         },
 
         cat: async (args) => {
             const pathArg = args[0];
             if (!pathArg) return logToTerminal('cat: missing operand');
             const fullPath = resolveClientPath(pathArg);
-            try {
-                const response = await fetch(`http://localhost:3000/api/cat?path=${encodeURIComponent(fullPath)}`);
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error);
-                logToTerminal(data.content);
-            } catch (error) {
-                logToTerminal(error.message);
-            }
+            const data = await kernel.syscall('fs.readFile', { path: fullPath });
+            logToTerminal(data.content);
         },
 
         cd: async (args) => {
             const targetPath = args[0] || '.';
             const newPath = resolveClientPath(targetPath);
-            try {
-                const response = await fetch('http://localhost:3000/api/checkdir', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path: newPath })
-                });
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error);
-                currentPath = newPath;
-            } catch (error) {
-                logToTerminal(error.message);
-            }
+            await kernel.syscall('fs.checkDir', { path: newPath });
+            currentPath = newPath;
         },
 
         mkdir: async (args) => {
             const dirName = args[0];
             if (!dirName) return logToTerminal('mkdir: missing operand');
             const fullPath = resolveClientPath(dirName);
-            try {
-                const response = await fetch('http://localhost:3000/api/mkdir', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path: fullPath })
-                });
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error);
-            } catch (error) {
-                logToTerminal(error.message);
-            }
+            await kernel.syscall('fs.makeDir', { path: fullPath });
         },
         
         touch: async (args) => {
             const fileName = args[0];
             if (!fileName) return logToTerminal('touch: missing file operand');
             const fullPath = resolveClientPath(fileName);
-            try {
-                const response = await fetch('http://localhost:3000/api/touch', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path: fullPath })
-                });
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error);
-            } catch (error) {
-                logToTerminal(error.message);
-            }
+            await kernel.syscall('fs.touchFile', { path: fullPath });
         },
 
         rm: async (args) => {
             const targetPath = args[0];
             if (!targetPath) return logToTerminal('rm: missing operand');
             const fullPath = resolveClientPath(targetPath);
-            try {
-                const response = await fetch('http://localhost:3000/api/rm', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path: fullPath })
-                });
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error);
-            } catch (error) {
-                logToTerminal(error.message);
-            }
+            await kernel.syscall('fs.remove', { path: fullPath });
         },
 
         mv: async (args) => {
             const [source, destination] = args;
             if (!source || !destination) return logToTerminal('mv: missing operand');
-            
             const sourcePath = resolveClientPath(source);
             const destinationPath = resolveClientPath(destination);
-            try {
-                const response = await fetch('http://localhost:3000/api/mv', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ source: sourcePath, destination: destinationPath })
-                });
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error);
-            } catch (error) {
-                logToTerminal(error.message);
+            await kernel.syscall('fs.move', { source: sourcePath, destination: destinationPath });
+        },
+        
+        // --- COMANDA NOUĂ 'ps' ---
+        ps: async () => {
+            const table = await kernel.syscall('proc.list');
+            const pids = Object.keys(table);
+            logToTerminal('PID\tCOMMAND');
+            if (pids.length === 0) {
+                return;
+            }
+            for (const pid of pids) {
+                logToTerminal(`${pid}\t${table[pid].name}`);
             }
         }
     };
@@ -170,22 +118,30 @@ export function initializeTerminal() {
         historyIndex = -1;
         logToTerminal(`${promptElement.textContent} ${commandStr}`);
         const [cmd, ...args] = commandStr.trim().split(' ');
+
         if (commands[cmd]) {
-            await commands[cmd](args);
+            try {
+                // MODIFICARE CHEIE: Cerem kernel-ului să ruleze comanda ca proces
+                await kernel.syscall('proc.run', {
+                    name: cmd,
+                    logic: commands[cmd],
+                    args: args
+                });
+            } catch (error) {
+                logToTerminal(error.message);
+            }
         } else {
             logToTerminal(`Command not found: ${cmd}.`);
         }
         updatePrompt();
     }
 
-    // --- Event Listeners ---
+    // Event Listeners (neschimbate)
     container.addEventListener('click', () => input.focus());
     input.addEventListener('keydown', async (e) => {
         if (e.key === 'Enter') {
             const command = input.value.trim();
-            if (command) {
-                await processCommand(command);
-            }
+            if (command) await processCommand(command);
             input.value = '';
         } else if (e.key === 'ArrowUp') {
             e.preventDefault();
@@ -215,8 +171,8 @@ export function initializeTerminal() {
         }
     });
 
-    // --- INIȚIALIZARE TERMINAL ---
-    logToTerminal('Welcome to WebOS Terminal v5.0 (Kernel Architecture).');
+    // Inițializare
+    logToTerminal('WebOS Terminal v5.2 (Process Management).');
     updatePrompt();
     input.focus();
 }
