@@ -1,0 +1,56 @@
+/* Stiluri generale */
+body, html {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    font-family: 'Courier New', Courier, monospace; /* Font specific pentru terminal */
+}
+
+#container {
+    width: 100%;
+    height: 100%;
+    background: #000;
+    color: #0F0;
+}
+
+/* Stiluri TERMINAL */
+#terminal {
+    padding: 10px;
+}
+
+#terminal-output p {
+    margin: 0;
+    white-space: pre-wrap; /* Păstrează formatarea textului */
+}
+
+.prompt-line {
+    display: flex;
+}
+
+.prompt-line span {
+    margin-right: 5px;
+}
+
+#terminal-input {
+    background: transparent;
+    border: none;
+    color: #0F0;
+    font-family: inherit;
+    font-size: 1em;
+    width: 100%;
+}
+
+#terminal-input:focus {
+    outline: none;
+}
+
+/* Stiluri vechi pentru DESKTOP (rămân la fel) */
+#desktop {
+    width: 100%;
+    height: calc(100% - 40px);
+    background: #3a8bcd;
+    position: relative;
+    font-family: sans-serif; /* Resetăm fontul pentru GUI */
+}
+/* ... restul stilurilor pentru .icon, #taskbar, .window, etc. rămân neschimbate ... */
