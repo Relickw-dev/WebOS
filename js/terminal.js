@@ -11,8 +11,9 @@ export function initializeTerminal() {
     const commandHistory = [];
     let historyIndex = -1;
     let currentPath = '.';
+    let jobCounter = 1;
 
-    const availableCommands = ['help', 'clear', 'echo', 'date', 'ls', 'cat', 'cd', 'mkdir', 'touch', 'rm', 'mv', 'ps', 'ping', 'grep', "pwd", "history", "uname"];
+    const availableCommands = ['help', 'clear', 'echo', 'date', 'ls', 'cat', 'cd', 'mkdir', 'touch', 'rm', 'mv', 'ps', 'ping', 'grep', 'pwd', 'history', 'uname'];
 
     function logToTerminal(message) {
         if (message === null || typeof message === 'undefined') return;
@@ -40,57 +41,31 @@ export function initializeTerminal() {
     const commands = {
         help: (args, context) => `Available commands: ${availableCommands.join(', ')}`,
         clear: (args, context) => { output.innerHTML = ''; return null; },
-        echo: (args, context) => {
-            const rawString = args.join(' ');
-            // Înlocuim secvența literală '\\n' (scrisă ca \\n în regex) cu un caracter newline
-            // și eliminăm ghilimelele de la început și sfârșit dacă există
-            return rawString.replace(/^"|"$/g, '').replace(/\\n/g, '\n');
-        },
+        echo: (args, context) => args.join(' ').replace(/^"|"$/g, '').replace(/\\n/g, '\n'),
         date: (args, context) => new Date().toLocaleString(),
+        pwd: (args, context) => currentPath,
+        history: (args, context) => commandHistory.slice(1).reverse().map((cmd, i) => ` ${i + 1}\t${cmd}`).join('\n'),
+        uname: (args, context) => 'WebOS Kernel Version 1.0',
 
         ls: async (args, context) => {
             const path = args[0] ? resolveClientPath(args[0]) : currentPath;
             const data = await kernel.syscall('fs.readDir', { path });
             return data.join('  ');
         },
-
-        // Afișează calea curentă.
-        pwd: (args, context) => {
-            // currentPath este deja menținut de terminal
-            return currentPath;
-        },
-
-        // Afișează istoricul comenzilor.
-        history: (args, context) => {
-            // commandHistory este deja menținut de terminal
-            // Folosim slice(1) pentru a exclude comanda 'history' curentă.
-            // reverse() pentru a afișa de la cea mai veche la cea mai nouă.
-            return commandHistory.slice(1).reverse().map((cmd, i) => ` ${i + 1}\t${cmd}`).join('\n');
-        },
-
-        // Afișează un nume simulat pentru sistem.
-        uname: (args, context) => {
-            return 'WebOS Kernel Version 1.0';
-        },
-
         cat: async (args, context) => {
-            if (args.length === 0) { // Citește de la stdin dacă nu are argumente
-                return context.stdin;
-            }
+            if (args.length === 0) return context.stdin;
             const pathArg = args[0];
             const fullPath = resolveClientPath(pathArg);
             const data = await kernel.syscall('fs.readFile', { path: fullPath });
             return data.content;
         },
-
         cd: async (args, context) => {
             const targetPath = args[0] || '.';
             const newPath = resolveClientPath(targetPath);
             await kernel.syscall('fs.checkDir', { path: newPath });
             currentPath = newPath;
-            return null; // Comanda 'cd' nu are output vizibil
+            return null;
         },
-
         mkdir: async (args, context) => {
             const dirName = args[0];
             if (!dirName) throw new Error('mkdir: missing operand');
@@ -98,7 +73,6 @@ export function initializeTerminal() {
             await kernel.syscall('fs.makeDir', { path: fullPath });
             return null;
         },
-        
         touch: async (args, context) => {
             const fileName = args[0];
             if (!fileName) throw new Error('touch: missing file operand');
@@ -106,7 +80,6 @@ export function initializeTerminal() {
             await kernel.syscall('fs.touchFile', { path: fullPath });
             return null;
         },
-
         rm: async (args, context) => {
             const targetPath = args[0];
             if (!targetPath) throw new Error('rm: missing operand');
@@ -114,7 +87,6 @@ export function initializeTerminal() {
             await kernel.syscall('fs.remove', { path: fullPath });
             return null;
         },
-
         mv: async (args, context) => {
             const [source, destination] = args;
             if (!source || !destination) throw new Error('mv: missing operand');
@@ -123,7 +95,6 @@ export function initializeTerminal() {
             await kernel.syscall('fs.move', { source: sourcePath, destination: destinationPath });
             return null;
         },
-        
         ps: async (args, context) => {
             const table = await kernel.syscall('proc.list');
             const pids = Object.keys(table);
@@ -134,60 +105,39 @@ export function initializeTerminal() {
             }
             return result;
         },
-        cp: async (args, context) => {
-            const [source, destination] = args;
-            if (!source || !destination) throw new Error('cp: missing operand');
-
-            const sourcePath = resolveClientPath(source);
-            const destinationPath = resolveClientPath(destination);
-            await kernel.syscall('fs.copy', { source: sourcePath, destination: destinationPath });
-            return null;
-        },
-
-        ping: async (args, context) => {
-            // Ping nu poate face pipe, el scrie direct în log-ul live
-            const hostname = args[0];
-            if (!hostname) return context.log('ping: missing host operand');
-            context.log(`Pinging ${hostname}...`);
-            const delay = (ms) => new Promise(res => setTimeout(res, ms));
-            for (let i = 0; i < 4; i++) {
-                await delay(1000);
-                const tripTime = Math.floor(Math.random() * 300) + 20;
-                if (Math.random() > 0.1) {
-                    context.log(`Reply from ${hostname}: time=${tripTime}ms`);
-                } else {
-                    context.log(`Request timed out.`);
-                }
-            }
-            return null;
-        },
-
         grep: (args, context) => {
             const pattern = args[0];
             if (!pattern) throw new Error('grep: missing pattern');
-            if (!context.stdin) return ''; // Nu face nimic dacă nu primește input
+            if (!context.stdin) return '';
             return context.stdin.split('\n').filter(line => line.includes(pattern)).join('\n');
         }
     };
-
-    // --- PARSER ȘI EXECUTOR NOU ---
+    
+    // --- PARSER ACTUALIZAT ---
     function parseCommandLine(commandStr) {
+        let isBackground = false;
+        if (commandStr.trim().endsWith('&')) {
+            isBackground = true;
+            commandStr = commandStr.trim().slice(0, -1).trim(); // Elimină '&'
+        }
+
         const pipeline = commandStr.split('|').map(s => s.trim());
         const commandsToRun = [];
 
         for (const cmdPart of pipeline) {
-            let [cmd, ...args] = cmdPart.split(' ').filter(Boolean);
-            let stdout = 'terminal'; // Default
+            let parts = cmdPart.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+            let [cmd, ...args] = parts.map(p => p.replace(/"/g, ''));
+            let stdout = 'terminal';
             
             const redirectIndex = args.indexOf('>');
             if (redirectIndex !== -1) {
                 stdout = { type: 'redirect', file: args[redirectIndex + 1] };
-                args.splice(redirectIndex, 2); // Elimină '>' și numele fișierului
+                args.splice(redirectIndex, 2);
             }
             
             commandsToRun.push({ name: cmd, args, stdout });
         }
-        return commandsToRun;
+        return { pipeline: commandsToRun, background: isBackground };
     }
 
     async function processCommand(commandStr) {
@@ -196,19 +146,23 @@ export function initializeTerminal() {
         logToTerminal(`${promptElement.textContent} ${commandStr}`);
         
         try {
-            const pipeline = parseCommandLine(commandStr);
+            const { pipeline, background } = parseCommandLine(commandStr);
             if(pipeline.length > 0 && pipeline[0].name) {
                 const commandFunctions = pipeline.map(p => ({ ...p, logic: commands[p.name] }));
 
-                // Verificăm dacă toate comenzile există
                 for (const cmd of commandFunctions) {
                     if (!cmd.logic) throw new Error(`Command not found: ${cmd.name}`);
                 }
 
-                await kernel.syscall('proc.pipeline', {
+                const result = await kernel.syscall('proc.pipeline', {
                     pipeline: commandFunctions,
+                    background: background,
                     logFunction: logToTerminal
                 });
+
+                if (background && result && result.pid) {
+                    logToTerminal(`[${jobCounter++}] ${result.pid}`);
+                }
             }
         } catch (error) {
             logToTerminal(error.message);
@@ -252,7 +206,7 @@ export function initializeTerminal() {
         }
     });
 
-    logToTerminal('WebOS Terminal v6.0 (I/O & Pipes).');
+    logToTerminal('WebOS Terminal v6.1 (Background Jobs).');
     updatePrompt();
     input.focus();
 }

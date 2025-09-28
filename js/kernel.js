@@ -28,60 +28,68 @@ export const kernel = {
         console.log(`Syscall: ${call}`, params);
 
         switch (call) {
-            case 'proc.run': // Wrapper simplu pentru pipeline cu o singură comandă
-                return await this.syscall('proc.pipeline', {
-                    pipeline: [{...params, stdout: 'terminal'}],
-                    logFunction: params.logFunction
-                });
-
             case 'proc.pipeline': {
-                let stdin = null; // stdin pentru prima comandă este null
+                const executePipeline = async () => {
+                    let stdin = null;
+                    let lastPid = -1;
 
-                for (let i = 0; i < params.pipeline.length; i++) {
-                    const procInfo = params.pipeline[i];
-                    let stdout = '';
-                    
-                    const context = {
-                        stdin: stdin,
-                        log: params.logFunction // Pentru comenzi ca 'ping' care scriu direct
-                    };
+                    for (let i = 0; i < params.pipeline.length; i++) {
+                        const procInfo = params.pipeline[i];
+                        let stdout = '';
+                        
+                        const context = {
+                            stdin: stdin,
+                            log: params.logFunction
+                        };
 
-                    const pid = nextPid++;
-                    processTable[pid] = { name: procInfo.name, status: 'running' };
+                        const pid = nextPid++;
+                        lastPid = pid;
+                        processTable[pid] = { name: procInfo.name, status: 'running' };
+                        console.log(`Started process ${pid}: ${procInfo.name}`);
 
-                    try {
-                        const output = await procInfo.logic(procInfo.args, context);
-                        if(output) stdout = output;
-                    } catch(e) {
-                         params.logFunction(e.message); // Afișăm eroarea în terminal
-                         delete processTable[pid];
-                         return; // Oprim pipeline-ul la eroare
-                    } finally {
-                        delete processTable[pid];
-                    }
+                        try {
+                            const output = await procInfo.logic(procInfo.args, context);
+                            if (output) stdout = output;
+                        } catch (e) {
+                            params.logFunction(e.message);
+                            delete processTable[pid];
+                            return; // Oprește pipeline-ul
+                        } finally {
+                            delete processTable[pid];
+                            console.log(`Process ${pid} (${procInfo.name}) finished.`);
+                        }
 
-                    // Pregătim input-ul pentru următoarea comandă
-                    stdin = stdout;
+                        stdin = stdout;
 
-                    // Dacă este ultima comandă
-                    if (i === params.pipeline.length - 1) {
-                        if (procInfo.stdout.type === 'redirect') {
-                            await this.syscall('fs.writeFile', { path: procInfo.stdout.file, content: stdout });
-                        } else {
-                            params.logFunction(stdout);
+                        if (i === params.pipeline.length - 1) {
+                            if (procInfo.stdout.type === 'redirect') {
+                                await this.syscall('fs.writeFile', { path: procInfo.stdout.file, content: stdout });
+                            } else {
+                                params.logFunction(stdout);
+                            }
                         }
                     }
+                };
+
+                if (params.background) {
+                    // Rulează în background, fără await
+                    executePipeline();
+                    // Returnăm un PID pentru afișare (deși nu avem un sistem complet de jobs)
+                    return { pid: nextPid }; // PID-ul următorului proces, ca referință
+                } else {
+                    // Rulează în foreground, cu await
+                    await executePipeline();
+                    return null;
                 }
-                return;
             }
             
-            case 'proc.list':
+            case 'proc.list': {
                 return Promise.resolve({ ...processTable });
+            }
 
-            case 'fs.writeFile': // Syscall nou pentru scriere
+            case 'fs.writeFile':
                 return await apiRequest('touch', 'POST', { path: params.path, content: params.content });
             
-            // ... restul syscalls (neschimbate) ...
             case 'fs.readDir':
                 return await apiRequest(`files?path=${encodeURIComponent(params.path)}`);
             case 'fs.readFile':
@@ -96,8 +104,6 @@ export const kernel = {
                 return await apiRequest('rm', 'POST', { path: params.path });
             case 'fs.move':
                 return await apiRequest('mv', 'POST', { source: params.source, destination: params.destination });
-            case 'fs.copy':
-                return await apiRequest('copy', 'POST', { source: params.source, destination: params.destination });
 
             default:
                 throw new Error(`Unknown syscall: ${call}`);
