@@ -1,20 +1,17 @@
 // js/boot.js
 
-// --- ELEMENTE DOM ---
 const container = document.getElementById('container');
 const output = document.getElementById('terminal-output');
 const input = document.getElementById('terminal-input');
 const promptElement = document.getElementById('prompt');
 
-// --- STAREA TERMINALULUI ---
 const commandHistory = [];
 let historyIndex = -1;
 let currentPath = '.';
 
-// --- LISTA DE COMENZI ---
-const availableCommands = ['help', 'clear', 'echo', 'date', 'ls', 'cat', 'cd', 'mkdir'];
+// Adăugăm noile comenzi
+const availableCommands = ['help', 'clear', 'echo', 'date', 'ls', 'cat', 'cd', 'mkdir', 'touch', 'rm', 'mv'];
 
-// --- FUNCȚII UTILITARE ---
 function logToTerminal(message) {
     output.innerHTML += `<p>${message}</p>`;
     output.scrollTop = output.scrollHeight;
@@ -42,7 +39,6 @@ function resolveClientPath(targetPath) {
     return newPath === '' ? '.' : newPath;
 }
 
-// --- LOGICA COMENZILOR ---
 const commands = {
     help: () => logToTerminal(`Available commands: ${availableCommands.join(', ')}`),
     clear: () => output.innerHTML = '',
@@ -63,10 +59,7 @@ const commands = {
 
     cat: async (args) => {
         const pathArg = args[0];
-        if (!pathArg) {
-            logToTerminal('cat: missing operand');
-            return;
-        }
+        if (!pathArg) return logToTerminal('cat: missing operand');
         const fullPath = resolveClientPath(pathArg);
         try {
             const response = await fetch(`http://localhost:3000/api/cat?path=${encodeURIComponent(fullPath)}`);
@@ -97,16 +90,70 @@ const commands = {
 
     mkdir: async (args) => {
         const dirName = args[0];
-        if (!dirName) {
-            logToTerminal('mkdir: missing operand');
-            return;
-        }
+        if (!dirName) return logToTerminal('mkdir: missing operand');
         const fullPath = resolveClientPath(dirName);
         try {
             const response = await fetch('http://localhost:3000/api/mkdir', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ path: fullPath })
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error);
+        } catch (error) {
+            logToTerminal(error.message);
+        }
+    },
+    
+    // --- COMANDA NOUĂ 'touch' ---
+    touch: async (args) => {
+        const fileName = args[0];
+        if (!fileName) return logToTerminal('touch: missing file operand');
+        const fullPath = resolveClientPath(fileName);
+        try {
+            const response = await fetch('http://localhost:3000/api/touch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: fullPath })
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error);
+        } catch (error) {
+            logToTerminal(error.message);
+        }
+    },
+
+    // --- COMANDA NOUĂ 'rm' ---
+    rm: async (args) => {
+        const targetPath = args[0];
+        if (!targetPath) return logToTerminal('rm: missing operand');
+        const fullPath = resolveClientPath(targetPath);
+        try {
+            const response = await fetch('http://localhost:3000/api/rm', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: fullPath })
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error);
+        } catch (error) {
+            logToTerminal(error.message);
+        }
+    },
+
+    // --- COMANDA NOUĂ 'mv' ---
+    mv: async (args) => {
+        const [source, destination] = args;
+        if (!source || !destination) return logToTerminal('mv: missing operand');
+        
+        const sourcePath = resolveClientPath(source);
+        const destinationPath = resolveClientPath(destination);
+
+        try {
+            const response = await fetch('http://localhost:3000/api/mv', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ source: sourcePath, destination: destinationPath })
             });
             const data = await response.json();
             if (!response.ok) throw new Error(data.error);
@@ -129,7 +176,7 @@ async function processCommand(commandStr) {
     updatePrompt();
 }
 
-// Event Listeners
+// Event Listeners (neschimbate)
 container.addEventListener('click', () => input.focus());
 input.addEventListener('keydown', async (e) => {
     if (e.key === 'Enter') {
@@ -166,7 +213,7 @@ input.addEventListener('keydown', async (e) => {
     }
 });
 
-// --- INIȚIALIZARE ---
-logToTerminal('WebOS Terminal v4.0 (Sandboxed). Welcome!');
+// Inițializare
+logToTerminal('WebOS Terminal v4.1 (File Ops Ready). Welcome!');
 updatePrompt();
 input.focus();

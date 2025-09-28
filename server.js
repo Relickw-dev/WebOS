@@ -10,10 +10,8 @@ const port = 3000;
 app.use(cors());
 app.use(express.json());
 
-// --- MODIFICARE CHEIE: Definim rădăcina virtuală ---
 const virtualRoot = path.join(process.cwd(), 'fs_root');
 
-// Funcție de securitate pentru a ne asigura că nu ieșim din virtualRoot
 function securePath(relativePath) {
     const absolutePath = path.resolve(virtualRoot, relativePath);
     if (!absolutePath.startsWith(virtualRoot)) {
@@ -22,11 +20,11 @@ function securePath(relativePath) {
     return absolutePath;
 }
 
-// Endpoint pentru 'ls'
+// Endpoint pentru 'ls' (neschimbat)
 app.get('/api/files', async (req, res) => {
     try {
         const relativePath = req.query.path || '.';
-        const absolutePath = securePath(relativePath); // Securizăm calea
+        const absolutePath = securePath(relativePath);
         const entries = await fs.readdir(absolutePath, { withFileTypes: true });
         const files = entries.map(entry => entry.isDirectory() ? `${entry.name}/` : entry.name);
         res.json(files);
@@ -35,16 +33,14 @@ app.get('/api/files', async (req, res) => {
     }
 });
 
-// Endpoint pentru 'cat'
+// Endpoint pentru 'cat' (neschimbat)
 app.get('/api/cat', async (req, res) => {
     try {
         const relativePath = req.query.path;
         if (!relativePath) throw new Error('cat: missing operand');
-        
-        const absolutePath = securePath(relativePath); // Securizăm calea
+        const absolutePath = securePath(relativePath);
         const stats = await fs.stat(absolutePath);
         if (stats.isDirectory()) throw new Error(`cat: ${relativePath}: Is a directory`);
-
         const content = await fs.readFile(absolutePath, 'utf-8');
         res.json({ content });
     } catch (error) {
@@ -52,13 +48,12 @@ app.get('/api/cat', async (req, res) => {
     }
 });
 
-// Endpoint pentru 'mkdir'
+// Endpoint pentru 'mkdir' (neschimbat)
 app.post('/api/mkdir', async (req, res) => {
     try {
         const relativePath = req.body.path;
         if (!relativePath) throw new Error('mkdir: missing operand');
-
-        const absolutePath = securePath(relativePath); // Securizăm calea
+        const absolutePath = securePath(relativePath);
         await fs.mkdir(absolutePath);
         res.json({ success: true });
     } catch (error) {
@@ -66,11 +61,11 @@ app.post('/api/mkdir', async (req, res) => {
     }
 });
 
-// Endpoint pentru validarea căilor ('cd')
+// Endpoint pentru validarea căilor ('cd') (neschimbat)
 app.post('/api/checkdir', async (req, res) => {
     try {
         const relativePath = req.body.path;
-        const absolutePath = securePath(relativePath); // Securizăm calea
+        const absolutePath = securePath(relativePath);
         const stats = await fs.stat(absolutePath);
         if (stats.isDirectory()) {
             res.json({ isDirectory: true });
@@ -82,12 +77,53 @@ app.post('/api/checkdir', async (req, res) => {
     }
 });
 
-// --- Funcție de pornire a serverului ---
+// --- ENDPOINT NOU PENTRU 'touch' ---
+app.post('/api/touch', async (req, res) => {
+    try {
+        const relativePath = req.body.path;
+        if (!relativePath) throw new Error('touch: missing file operand');
+        const absolutePath = securePath(relativePath);
+        await fs.writeFile(absolutePath, ''); // Creează un fișier gol
+        res.json({ success: true });
+    } catch (error) {
+        res.status(400).json({ error: error.message || `touch: cannot create file` });
+    }
+});
+
+// --- ENDPOINT NOU PENTRU 'rm' ---
+app.post('/api/rm', async (req, res) => {
+    try {
+        const relativePath = req.body.path;
+        if (!relativePath) throw new Error('rm: missing operand');
+        const absolutePath = securePath(relativePath);
+        
+        // `fs.rm` poate șterge atât fișiere, cât și foldere (cu `recursive: true`)
+        await fs.rm(absolutePath, { recursive: true, force: true });
+        res.json({ success: true });
+    } catch (error) {
+        res.status(400).json({ error: error.message || `rm: cannot remove file or directory` });
+    }
+});
+
+// --- ENDPOINT NOU PENTRU 'mv' ---
+app.post('/api/mv', async (req, res) => {
+    try {
+        const { source, destination } = req.body;
+        if (!source || !destination) throw new Error('mv: missing operand');
+
+        const absoluteSource = securePath(source);
+        const absoluteDestination = securePath(destination);
+        
+        await fs.rename(absoluteSource, absoluteDestination);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(400).json({ error: error.message || `mv: cannot move file or directory` });
+    }
+});
+
 async function startServer() {
     try {
-        // Creăm directorul rădăcină virtual dacă nu există
         await fs.mkdir(virtualRoot, { recursive: true });
-        
         app.listen(port, () => {
             console.log(`Server is running at http://localhost:${port}`);
             console.log(`Serving files from virtual root: ${virtualRoot}`);
