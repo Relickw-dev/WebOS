@@ -2,6 +2,22 @@
 
 import { kernel } from './kernel.js';
 
+// Funcție ajutătoare pentru a separa opțiunile de argumentele simple
+function parseArgs(args) {
+    const options = new Set();
+    const cleanArgs = [];
+    for (const arg of args) {
+        if (arg.startsWith('-') && arg.length > 1) {
+            for (let i = 1; i < arg.length; i++) {
+                options.add(arg[i]);
+            }
+        } else {
+            cleanArgs.push(arg);
+        }
+    }
+    return { options, cleanArgs };
+}
+
 export function initializeTerminal() {
     const container = document.getElementById('container');
     const output = document.getElementById('terminal-output');
@@ -12,27 +28,26 @@ export function initializeTerminal() {
     let historyIndex = -1;
     let currentPath = '.';
     
-    // --- SISTEM DE JOBURI ---
-    let jobs = {}; // Tabela de joburi (procese din background)
+    let jobs = {};
     let nextJobId = 1;
-    let isCommandRunning = false; // Blochează prompt-ul în timpul execuției foreground
+    let isCommandRunning = false;
+    let isAwaitingConfirmation = false;
+    let confirmationResolver = null;
 
     const availableCommands = [
         'help', 'clear', 'echo', 'date', 'ls', 'cat', 'cd', 'mkdir', 
-        'touch', 'rm', 'mv', 'ps', 'grep', 'pwd', 'history', 'uname',
-        'jobs', 'kill', 'sleep' // Comenzi noi
+        'touch', 'rm', 'mv', 'cp', 'ps', 'grep', 'pwd', 'history', 'uname',
+        'jobs', 'kill', 'sleep' 
     ];
 
     function logToTerminal(message) {
-        if (message === null || typeof message === 'undefined') return;
-        // Păstrează formatarea spațiilor multiple și a liniilor noi
-        const formattedMessage = message.toString().replace(/ /g, '&nbsp;');
-        output.innerHTML += `<p style="white-space: pre-wrap;">${formattedMessage}</p>`;
+        if (message === null || typeof message === 'undefined' || message === '') return;
+        output.innerHTML += `<p>${message.toString().replace(/\n/g, '<br>').replace(/ /g, '&nbsp;')}</p>`;
         output.scrollTop = output.scrollHeight;
     }
 
     function updatePrompt() {
-        if (isCommandRunning) {
+        if (isCommandRunning || isAwaitingConfirmation) {
             promptElement.parentElement.style.display = 'none';
         } else {
             const displayPath = currentPath === '.' ? '~' : `~/${currentPath.replace(/^\.\//, '')}`;
@@ -41,55 +56,53 @@ export function initializeTerminal() {
             input.focus();
         }
     }
+    
+    function awaitConfirmation(promptMessage) {
+        logToTerminal(`${promptMessage} (y/n)`);
+        isAwaitingConfirmation = true;
+        updatePrompt();
+        return new Promise(resolve => {
+            confirmationResolver = resolve;
+        });
+    }
 
     function resolveClientPath(targetPath) {
         if (!targetPath) return currentPath;
-        if (targetPath.startsWith('/')) {
-            return targetPath.substring(1) || '.';
-        }
+        if (targetPath.startsWith('/')) return targetPath.substring(1) || '.';
+        
         const pathParts = currentPath === '.' ? [] : currentPath.split('/');
         const targetParts = targetPath.split('/').filter(p => p);
 
         for (const part of targetParts) {
-            if (part === '..') {
-                pathParts.pop();
-            } else if (part !== '.') {
-                pathParts.push(part);
-            }
+            if (part === '..') pathParts.pop();
+            else if (part !== '.') pathParts.push(part);
         }
-        let newPath = pathParts.join('/');
-        return newPath === '' ? '.' : newPath;
+        return pathParts.join('/') || '.';
     }
 
     const commands = {
-        help: (args, context) => `Available commands: ${availableCommands.join(', ')}`,
-        clear: (args, context) => { output.innerHTML = ''; return null; },
-        echo: (args, context) => args.join(' ').replace(/^"|"$/g, '').replace(/\\n/g, '\n'),
-        date: (args, context) => new Date().toLocaleString(),
-        pwd: (args, context) => currentPath === '.' ? '/' : `/${currentPath}`,
-        history: (args, context) => commandHistory.slice().reverse().map((cmd, i) => ` ${i + 1}\t${cmd}`).join('\n'),
-        uname: (args, context) => 'WebOS Kernel Version 1.1 (Advanced Process Management)',
-
-        // --- COMENZI NOI ȘI ACTUALIZATE ---
-        jobs: async (args, context) => {
+        help: () => `Available commands: ${availableCommands.join(', ')}`,
+        clear: () => { output.innerHTML = ''; return null; },
+        echo: (args) => args.join(' ').replace(/^"|"$/g, '').replace(/\\n/g, '\n'),
+        date: () => new Date().toLocaleString(),
+        pwd: () => currentPath === '.' ? '/' : `/${currentPath}`,
+        history: () => commandHistory.slice().reverse().map((cmd, i) => ` ${i + 1}\t${cmd}`).join('\n'),
+        uname: () => 'WebOS Kernel Version 2.0 (Robust File System)',
+        jobs: async () => {
             const procTable = await kernel.syscall('proc.list');
             let result = '';
-            
             for (const jid in jobs) {
                 const job = jobs[jid];
                 const mainProcess = procTable[job.pids[0]];
-                
                 if (mainProcess) {
                      result += `[${jid}] ${mainProcess.status}\t${job.commandStr}\n`;
                 } else {
-                    // Dacă procesul nu mai e în tabela kernel-ului, îl curățăm
                     delete jobs[jid];
                 }
             }
             return result.trim() || 'No active jobs.';
         },
-        
-        ps: async (args, context) => {
+        ps: async () => {
             const table = await kernel.syscall('proc.list');
             const pids = Object.keys(table);
             let result = 'PID\tSTATUS\t\tCOMMAND';
@@ -100,183 +113,150 @@ export function initializeTerminal() {
             }
             return result;
         },
-        
-        kill: async (args, context) => {
+        kill: async (args) => {
             const pidToKill = parseInt(args[0], 10);
             if (isNaN(pidToKill)) throw new Error('kill: usage: kill <pid>');
-            
             const success = await kernel.syscall('proc.kill', { pid: pidToKill });
             if (!success) throw new Error(`kill: (${pidToKill}) - No such process`);
-            
-            // Eliminăm și din lista de joburi dacă e cazul
             for (const jid in jobs) {
-                if (jobs[jid].pids.includes(pidToKill)) {
-                    delete jobs[jid];
-                    break;
-                }
+                if (jobs[jid].pids.includes(pidToKill)) delete jobs[jid];
             }
             logToTerminal(`Process ${pidToKill} terminated.`);
             return null;
         },
+        sleep: (args) => new Promise(resolve => setTimeout(() => resolve(`Slept for ${parseInt(args[0], 10)}ms.`), parseInt(args[0] || 1000, 10))),
 
-        sleep: (args, context) => {
-            const ms = parseInt(args[0] || 1000, 10);
-            if (isNaN(ms)) throw new Error('sleep: invalid time');
-            return new Promise(resolve => setTimeout(() => resolve(`Slept for ${ms}ms.`), ms));
-        },
+        ls: async (args) => {
+            const { options, cleanArgs } = parseArgs(args);
+            const path = cleanArgs[0] ? resolveClientPath(cleanArgs[0]) : currentPath;
+            const lsOptions = { showHidden: options.has('a'), longFormat: options.has('l') };
+            const data = await kernel.syscall('fs.readDir', { path, options: lsOptions });
 
-        ls: async (args, context) => {
-            // 1. Parsăm argumentele pentru a separa opțiunile de cale
-            const isRecursive = args.includes('-R');
-            const pathArg = args.find(arg => !arg.startsWith('-')); // Găsim primul argument care nu este o opțiune
-            const path = pathArg ? resolveClientPath(pathArg) : currentPath;
-
-            // 2. Funcție recursivă pentru listare
-            const listRecursively = async (currentPath, depth = 0) => {
-                let result = '';
-                const indent = '  '.repeat(depth);
-
-                try {
-                    const entries = await kernel.syscall('fs.readDir', { path: currentPath });
-                    
-                    for (const entry of entries) {
-                        result += `${indent}${entry}\n`;
-                        // Dacă este director și avem flag-ul recursiv
-                        if (entry.endsWith('/') && isRecursive) {
-                            const nextPath = `${currentPath}/${entry}`.replace(/\/+/g, '/').replace(/\/$/, '');
-                            // Apel recursiv pentru subdirector
-                            result += await listRecursively(nextPath, depth + 1);
-                        }
-                    }
-                } catch (e) {
-                    // Dacă un subdirector nu poate fi accesat, afișăm eroarea și continuăm
-                    return `${indent}ls: cannot access '${currentPath}': ${e.message}\n`;
-                }
-                return result;
-            };
-
-            // 3. Executăm funcția corespunzătoare
-            if (isRecursive) {
-                const output = await listRecursively(path);
-                return output.trim();
+            if (lsOptions.longFormat) {
+                return data.map(item => {
+                    const type = item.isDirectory ? 'd' : '-';
+                    const perms = 'rwxr-xr-x';
+                    const size = item.size.toString().padStart(8, ' ');
+                    const mtime = new Date(item.mtime).toLocaleDateString();
+                    const name = item.isDirectory ? `<span style="color: #6495ED;">${item.name}/</span>` : `<span style="color: #32CD32;">${item.name}</span>`;
+                    return `${type}${perms} ${size} ${mtime} ${name}`;
+                }).join('\n');
             } else {
-                // Comportamentul original, non-recursiv
-                const data = await kernel.syscall('fs.readDir', { path });
-                return data.join('  ');
+                return data.map(item => 
+                    item.endsWith('/') ? `<span style="color: #6495ED;">${item}</span>` : `<span style="color: #32CD32;">${item}</span>`
+                ).join('  ');
             }
         },
         cat: async (args, context) => {
-            if (args.length === 0) {
+            const { options, cleanArgs } = parseArgs(args);
+            if (cleanArgs.length === 0) {
                 if (context.stdin) return context.stdin;
                 throw new Error('cat: missing file operand');
             }
-            const pathArg = args[0];
-            const fullPath = resolveClientPath(pathArg);
-            const data = await kernel.syscall('fs.readFile', { path: fullPath });
-            return data.content;
+            let fullContent = '';
+            for (const file of cleanArgs) {
+                const data = await kernel.syscall('fs.readFile', { path: resolveClientPath(file) });
+                fullContent += data.content;
+            }
+            return options.has('n') ? fullContent.split('\n').map((line, i) => `${(i + 1).toString().padStart(6, ' ')}  ${line}`).join('\n') : fullContent;
         },
-        cd: async (args, context) => {
+        mkdir: async (args) => {
+            const { options, cleanArgs } = parseArgs(args);
+            if (cleanArgs.length === 0) throw new Error('mkdir: missing operand');
+            for (const dirName of cleanArgs) {
+                await kernel.syscall('fs.makeDir', { path: resolveClientPath(dirName), createParents: options.has('p') });
+            }
+            return null;
+        },
+        rm: async (args) => {
+            const { options, cleanArgs } = parseArgs(args);
+            if (cleanArgs.length === 0) throw new Error('rm: missing operand');
+            const isInteractive = options.has('i'), isForced = options.has('f');
+
+            for (const target of cleanArgs) {
+                if (isInteractive && !isForced) {
+                    const confirmation = await awaitConfirmation(`rm: remove '${target}'?`);
+                    if (!confirmation) continue;
+                }
+                await kernel.syscall('fs.remove', { path: resolveClientPath(target), force: isForced });
+            }
+            return null;
+        },
+        mv: async (args) => {
+            const { cleanArgs } = parseArgs(args);
+            if (cleanArgs.length < 2) throw new Error('mv: missing file operand');
+            const destination = cleanArgs.pop();
+            for (const source of cleanArgs) {
+                await kernel.syscall('fs.move', { source: resolveClientPath(source), destination: resolveClientPath(destination) });
+            }
+            return null;
+        },
+        cp: async (args) => {
+            const { options, cleanArgs } = parseArgs(args);
+            if (cleanArgs.length < 2) throw new Error('cp: missing file operand');
+            const destination = cleanArgs.pop();
+            for (const source of cleanArgs) {
+                await kernel.syscall('fs.copy', { source: resolveClientPath(source), destination: resolveClientPath(destination), recursive: options.has('r') });
+            }
+            return null;
+        },
+        cd: async (args) => {
             const targetPath = args[0] || '.';
             const newPath = resolveClientPath(targetPath);
             await kernel.syscall('fs.checkDir', { path: newPath });
             currentPath = newPath;
             return null;
         },
-        mkdir: async (args, context) => {
-            const dirName = args[0];
-            if (!dirName) throw new Error('mkdir: missing operand');
-            const fullPath = resolveClientPath(dirName);
-            await kernel.syscall('fs.makeDir', { path: fullPath });
-            return null;
-        },
-        touch: async (args, context) => {
-            const fileName = args[0];
-            if (!fileName) throw new Error('touch: missing file operand');
-            const fullPath = resolveClientPath(fileName);
-            await kernel.syscall('fs.touchFile', { path: fullPath });
-            return null;
-        },
-        rm: async (args, context) => {
-            const targetPath = args[0];
-            if (!targetPath) throw new Error('rm: missing operand');
-            const fullPath = resolveClientPath(targetPath);
-            await kernel.syscall('fs.remove', { path: fullPath });
-            return null;
-        },
-        mv: async (args, context) => {
-            const [source, destination] = args;
-            if (!source || !destination) throw new Error('mv: missing operand');
-            const sourcePath = resolveClientPath(source);
-            const destinationPath = resolveClientPath(destination);
-            await kernel.syscall('fs.move', { source: sourcePath, destination: destinationPath });
+        touch: async (args) => {
+            if (args.length === 0) throw new Error('touch: missing file operand');
+            for (const fileName of args) {
+                await kernel.syscall('fs.touchFile', { path: resolveClientPath(fileName) });
+            }
             return null;
         },
         grep: (args, context) => {
             const pattern = args[0];
             if (!pattern) throw new Error('grep: missing pattern');
-            const input = context.stdin;
-            if (input === null || typeof input === 'undefined') {
-                return ''; // Dacă nu există input, returnează un string gol
-            }
-            return input.toString().split('\n').filter(line => line.includes(pattern)).join('\n');
+            if (context.stdin === null || typeof context.stdin === 'undefined') return '';
+            return context.stdin.toString().split('\n').filter(line => line.includes(pattern)).join('\n');
         }
     };
-    
+
     function parseCommandLine(commandStr) {
-        let isBackground = false;
-        if (commandStr.trim().endsWith('&')) {
-            isBackground = true;
-            commandStr = commandStr.trim().slice(0, -1).trim();
-        }
+        let isBackground = commandStr.trim().endsWith('&');
+        if (isBackground) commandStr = commandStr.trim().slice(0, -1).trim();
 
-        const pipeline = commandStr.split('|').map(s => s.trim());
-        const commandsToRun = [];
-
-        for (const cmdPart of pipeline) {
-            let parts = cmdPart.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
-            let [cmd, ...args] = parts.map(p => p.replace(/"/g, ''));
-            let stdout = { type: 'terminal' };
-            
-            const redirectIndex = args.indexOf('>');
-            if (redirectIndex !== -1 && args[redirectIndex + 1]) {
-                stdout = { type: 'redirect', file: resolveClientPath(args[redirectIndex + 1]) };
-                args.splice(redirectIndex, 2);
-            }
-            
-            commandsToRun.push({ name: cmd, args, stdout });
-        }
-        return { pipeline: commandsToRun, background: isBackground };
+        return {
+            pipeline: commandStr.split('|').map(s => {
+                let parts = s.trim().match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+                let [cmd, ...args] = parts.map(p => p.replace(/^["']|["']$/g, ''));
+                let stdout = { type: 'terminal' };
+                const redirectIndex = args.indexOf('>');
+                if (redirectIndex > -1 && args[redirectIndex + 1]) {
+                    stdout = { type: 'redirect', file: resolveClientPath(args[redirectIndex + 1]) };
+                    args.splice(redirectIndex, 2);
+                }
+                return { name: cmd, args, stdout };
+            }),
+            background: isBackground
+        };
     }
 
     async function processCommand(commandStr) {
         if (isCommandRunning) return;
-
         commandHistory.unshift(commandStr);
         historyIndex = -1;
         logToTerminal(`${promptElement.textContent} ${commandStr}`);
-        
         isCommandRunning = true;
         updatePrompt();
         
         try {
             const { pipeline, background } = parseCommandLine(commandStr);
-            if(pipeline.length > 0 && pipeline[0].name) {
-                const commandFunctions = pipeline.map(p => ({
-                    ...p,
-                    logic: commands[p.name],
-                    fullCmd: `${p.name} ${p.args.join(' ')}`.trim()
-                }));
+            if (pipeline.length > 0 && pipeline[0].name) {
+                const commandFunctions = pipeline.map(p => ({...p, logic: commands[p.name], fullCmd: `${p.name} ${p.args.join(' ')}`.trim()}));
+                for (const cmd of commandFunctions) if (!cmd.logic) throw new Error(`Command not found: ${cmd.name}`);
 
-                for (const cmd of commandFunctions) {
-                    if (!cmd.logic) throw new Error(`Command not found: ${cmd.name}`);
-                }
-
-                const result = await kernel.syscall('proc.pipeline', {
-                    pipeline: commandFunctions,
-                    background: background,
-                    logFunction: logToTerminal
-                });
-
+                const result = await kernel.syscall('proc.pipeline', { pipeline: commandFunctions, background, logFunction: logToTerminal });
                 if (background && result && result.pids) {
                     const jid = nextJobId++;
                     jobs[jid] = { pids: result.pids, commandStr };
@@ -291,56 +271,44 @@ export function initializeTerminal() {
         }
     }
 
-    // Event Listeners
-    container.addEventListener('click', () => {
-        if (!isCommandRunning) input.focus();
-    });
+    container.addEventListener('click', () => { if (!isCommandRunning && !isAwaitingConfirmation) input.focus(); });
 
     input.addEventListener('keydown', async (e) => {
-        if (isCommandRunning) return;
-
         if (e.key === 'Enter') {
-            const command = input.value.trim();
+            const command = input.value;
             input.value = '';
-            if (command) {
-                await processCommand(command);
-            } else {
+
+            if (isAwaitingConfirmation) {
+                logToTerminal(command);
+                isAwaitingConfirmation = false;
+                confirmationResolver?.(command.toLowerCase() === 'y');
+                confirmationResolver = null;
                 updatePrompt();
+                return;
             }
-        } else if (e.key === 'ArrowUp') {
+            if (command.trim()) await processCommand(command.trim());
+            else updatePrompt();
+        } else if (e.key === 'ArrowUp' && !isAwaitingConfirmation) {
             e.preventDefault();
-            if (historyIndex < commandHistory.length - 1) {
-                historyIndex++;
-                input.value = commandHistory[historyIndex];
-            }
-        } else if (e.key === 'ArrowDown') {
+            if (historyIndex < commandHistory.length - 1) input.value = commandHistory[++historyIndex];
+        } else if (e.key === 'ArrowDown' && !isAwaitingConfirmation) {
             e.preventDefault();
-            if (historyIndex > 0) {
-                historyIndex--;
-                input.value = commandHistory[historyIndex];
-            } else {
-                historyIndex = -1;
-                input.value = '';
-            }
-        } else if (e.key === 'Tab') {
+            if (historyIndex > 0) input.value = commandHistory[--historyIndex];
+            else { historyIndex = -1; input.value = ''; }
+        } else if (e.key === 'Tab' && !isAwaitingConfirmation) {
             e.preventDefault();
-            const currentInput = input.value;
-            const parts = currentInput.split(' ');
-            const partial = parts[parts.length - 1];
-            
+            const partial = input.value.split(' ').pop();
             const matches = availableCommands.filter(c => c.startsWith(partial));
-            
             if (matches.length === 1) {
-                parts[parts.length - 1] = matches[0];
-                input.value = parts.join(' ') + ' ';
+                input.value = input.value.substring(0, input.value.lastIndexOf(partial)) + matches[0] + ' ';
             } else if (matches.length > 1) {
-                logToTerminal(`${promptElement.textContent} ${currentInput}`);
+                logToTerminal(`${promptElement.textContent} ${input.value}`);
                 logToTerminal(matches.join('  '));
                 updatePrompt();
             }
         }
     });
 
-    logToTerminal('WebOS Terminal v7.0 (Advanced Process Management).');
+    logToTerminal('WebOS Terminal v8.0 (Robust File System & Process Mgmt).');
     updatePrompt();
 }

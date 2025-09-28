@@ -13,27 +13,48 @@ app.use(express.json());
 const virtualRoot = path.join(process.cwd(), 'fs_root');
 
 function securePath(relativePath) {
-    const absolutePath = path.resolve(virtualRoot, relativePath);
+    const safeRelativePath = relativePath || '.';
+    const absolutePath = path.resolve(virtualRoot, safeRelativePath);
     if (!absolutePath.startsWith(virtualRoot)) {
         throw new Error('Access denied: Path is outside the allowed directory.');
     }
     return absolutePath;
 }
 
-// Endpoint pentru 'ls' (neschimbat)
-app.get('/api/files', async (req, res) => {
+// Endpoint pentru 'ls'
+app.post('/api/files', async (req, res) => {
     try {
-        const relativePath = req.query.path || '.';
+        const { path: relativePath, options = {} } = req.body;
         const absolutePath = securePath(relativePath);
         const entries = await fs.readdir(absolutePath, { withFileTypes: true });
-        const files = entries.map(entry => entry.isDirectory() ? `${entry.name}/` : entry.name);
+
+        let files = [];
+        for (const entry of entries) {
+            if (!options.showHidden && entry.name.startsWith('.')) {
+                continue;
+            }
+
+            if (options.longFormat) {
+                const stats = await fs.stat(path.join(absolutePath, entry.name));
+                files.push({
+                    name: entry.name,
+                    isDirectory: entry.isDirectory(),
+                    size: stats.size,
+                    mtime: stats.mtime.toISOString(),
+                });
+            } else {
+                files.push(entry.isDirectory() ? `${entry.name}/` : entry.name);
+            }
+        }
+        
+        files.sort((a, b) => (a.name || a).localeCompare(b.name || b));
         res.json(files);
     } catch (error) {
         res.status(400).json({ error: error.message || `ls: cannot access path` });
     }
 });
 
-// Endpoint pentru 'cat' (neschimbat)
+// Endpoint pentru 'cat'
 app.get('/api/cat', async (req, res) => {
     try {
         const relativePath = req.query.path;
@@ -48,40 +69,36 @@ app.get('/api/cat', async (req, res) => {
     }
 });
 
-// Endpoint pentru 'mkdir' (neschimbat)
+// Endpoint pentru 'mkdir'
 app.post('/api/mkdir', async (req, res) => {
     try {
-        const relativePath = req.body.path;
+        const { path: relativePath, createParents } = req.body;
         if (!relativePath) throw new Error('mkdir: missing operand');
         const absolutePath = securePath(relativePath);
-        await fs.mkdir(absolutePath);
+        await fs.mkdir(absolutePath, { recursive: createParents || false });
         res.json({ success: true });
     } catch (error) {
         res.status(400).json({ error: error.message || `mkdir: cannot create directory` });
     }
 });
 
-// Endpoint pentru validarea căilor ('cd') (neschimbat)
+// Endpoint pentru validarea căilor ('cd')
 app.post('/api/checkdir', async (req, res) => {
     try {
         const relativePath = req.body.path;
         const absolutePath = securePath(relativePath);
         const stats = await fs.stat(absolutePath);
-        if (stats.isDirectory()) {
-            res.json({ isDirectory: true });
-        } else {
-            throw new Error(`cd: ${relativePath}: Not a directory`);
-        }
+        if (!stats.isDirectory()) throw new Error(`cd: ${relativePath}: Not a directory`);
+        res.json({ isDirectory: true });
     } catch (error) {
         res.status(400).json({ isDirectory: false, error: error.message || `cd: No such file or directory` });
     }
 });
 
-// --- ENDPOINT MODIFICAT PENTRU 'touch'/'writeFile' ---
+// Endpoint pentru 'touch'/'writeFile'
 app.post('/api/touch', async (req, res) => {
     try {
         const relativePath = req.body.path;
-        // Primim și conținut; dacă nu există, va fi un string gol (comportament de touch)
         const content = req.body.content || ''; 
         if (!relativePath) throw new Error('touch: missing file operand');
         
@@ -93,50 +110,61 @@ app.post('/api/touch', async (req, res) => {
     }
 });
 
-// --- ENDPOINT NOU PENTRU 'rm' ---
+// Endpoint pentru 'rm'
 app.post('/api/rm', async (req, res) => {
     try {
-        const relativePath = req.body.path;
+        const { path: relativePath, force } = req.body;
         if (!relativePath) throw new Error('rm: missing operand');
         const absolutePath = securePath(relativePath);
-        
-        // `fs.rm` poate șterge atât fișiere, cât și foldere (cu `recursive: true`)
-        await fs.rm(absolutePath, { recursive: true, force: true });
+        await fs.rm(absolutePath, { recursive: true, force: force || false });
         res.json({ success: true });
     } catch (error) {
-        res.status(400).json({ error: error.message || `rm: cannot remove file or directory` });
+        res.status(400).json({ error: error.message || `rm: cannot remove` });
     }
 });
 
+// Endpoint pentru 'cp'
 app.post('/api/copy', async (req, res) => {
     try {
-        const { source, destination } = req.body;
+        const { source, destination, recursive } = req.body;
         if (!source || !destination) throw new Error('cp: missing operand');
 
         const absoluteSource = securePath(source);
         const absoluteDestination = securePath(destination);
 
-        // fs.cp este modern și poate copia recursiv foldere
-        await fs.cp(absoluteSource, absoluteDestination, { recursive: true });
+        const stats = await fs.stat(absoluteSource);
+        if (stats.isDirectory() && !recursive) {
+            throw new Error(`cp: -r not specified; omitting directory '${source}'`);
+        }
+        
+        await fs.cp(absoluteSource, absoluteDestination, { recursive: recursive || false });
         res.json({ success: true });
     } catch (error) {
         res.status(400).json({ error: error.message || `cp: cannot copy` });
     }
 });
 
-// --- ENDPOINT NOU PENTRU 'mv' ---
+// Endpoint pentru 'mv'
 app.post('/api/mv', async (req, res) => {
     try {
         const { source, destination } = req.body;
         if (!source || !destination) throw new Error('mv: missing operand');
 
         const absoluteSource = securePath(source);
-        const absoluteDestination = securePath(destination);
+        let absoluteDestination = securePath(destination);
+        
+        try {
+            const destStats = await fs.stat(absoluteDestination);
+            if (destStats.isDirectory()) {
+                const sourceBaseName = path.basename(absoluteSource);
+                absoluteDestination = path.join(absoluteDestination, sourceBaseName);
+            }
+        } catch (e) { /* Destinația nu există, deci e o redenumire */ }
         
         await fs.rename(absoluteSource, absoluteDestination);
         res.json({ success: true });
     } catch (error) {
-        res.status(400).json({ error: error.message || `mv: cannot move file or directory` });
+        res.status(400).json({ error: error.message || `mv: cannot move` });
     }
 });
 
