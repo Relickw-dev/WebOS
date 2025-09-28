@@ -4,7 +4,27 @@
         "**/.svn": true,
         "**/.hg": true,
         "**/.DS_Store": true,
-        "**/Thumbs.db": true
+        "**/Thumbs.db": true,
+        "desktop.ini": true,
+        ".vscode": true,
+        "node_modules": true,
+        "package-lock.json": true,
+        "package.json": true
     },
-    "hide-files.files": []
+    "hide-files.files": [
+        "desktop.ini",
+        ".vscode",
+        "node_modules",
+        "package-lock.json",
+        "package.json"
+    ],
+    "liveServer.settings.ignoreFiles": [
+        ".vscode/**",
+        "**/node_modules/**",
+        "**/fs_root/**",
+        "server.js",
+        "package.json",
+        "package-lock.json"
+    ]
 }
+

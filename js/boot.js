@@ -9,9 +9,9 @@ const promptElement = document.getElementById('prompt');
 // --- STAREA TERMINALULUI ---
 const commandHistory = [];
 let historyIndex = -1;
-let currentPath = '.'; // Directorul curent, menținut pe client
+let currentPath = '.';
 
-// --- LISTA DE COMENZI PENTRU AUTO-COMPLETARE ---
+// --- LISTA DE COMENZI ---
 const availableCommands = ['help', 'clear', 'echo', 'date', 'ls', 'cat', 'cd', 'mkdir'];
 
 // --- FUNCȚII UTILITARE ---
@@ -21,7 +21,7 @@ function logToTerminal(message) {
 }
 
 function updatePrompt() {
-    const displayPath = currentPath === '.' ? '~' : currentPath;
+    const displayPath = currentPath === '.' ? '~' : `~/${currentPath}`;
     promptElement.textContent = `user@webos:${displayPath}$`;
 }
 
@@ -31,7 +31,6 @@ function resolveClientPath(targetPath) {
     }
     const pathParts = currentPath === '.' ? [] : currentPath.split('/');
     const targetParts = targetPath.split('/').filter(p => p);
-
     for (const part of targetParts) {
         if (part === '..') {
             pathParts.pop();
@@ -51,7 +50,7 @@ const commands = {
     date: () => logToTerminal(new Date().toLocaleString()),
 
     ls: async (args) => {
-        const path = args[0] || currentPath;
+        const path = args[0] ? resolveClientPath(args[0]) : currentPath;
         try {
             const response = await fetch(`http://localhost:3000/api/files?path=${encodeURIComponent(path)}`);
             const data = await response.json();
@@ -68,7 +67,7 @@ const commands = {
             logToTerminal('cat: missing operand');
             return;
         }
-        const fullPath = pathArg.startsWith('.') ? resolveClientPath(pathArg) : `${currentPath}/${pathArg}`.replace('./', '');
+        const fullPath = resolveClientPath(pathArg);
         try {
             const response = await fetch(`http://localhost:3000/api/cat?path=${encodeURIComponent(fullPath)}`);
             const data = await response.json();
@@ -80,11 +79,7 @@ const commands = {
     },
 
     cd: async (args) => {
-        const targetPath = args[0];
-        if (!targetPath) {
-            currentPath = '.';
-            return;
-        }
+        const targetPath = args[0] || '.';
         const newPath = resolveClientPath(targetPath);
         try {
             const response = await fetch('http://localhost:3000/api/checkdir', {
@@ -106,7 +101,7 @@ const commands = {
             logToTerminal('mkdir: missing operand');
             return;
         }
-        const fullPath = `${currentPath}/${dirName}`.replace('./', '');
+        const fullPath = resolveClientPath(dirName);
         try {
             const response = await fetch('http://localhost:3000/api/mkdir', {
                 method: 'POST',
@@ -172,6 +167,6 @@ input.addEventListener('keydown', async (e) => {
 });
 
 // --- INIȚIALIZARE ---
-logToTerminal('WebOS Terminal v3.1. Commands `cd` and `mkdir` are now available.');
+logToTerminal('WebOS Terminal v4.0 (Sandboxed). Welcome!');
 updatePrompt();
 input.focus();
