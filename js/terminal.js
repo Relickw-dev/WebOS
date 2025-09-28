@@ -12,7 +12,7 @@ export function initializeTerminal() {
     let historyIndex = -1;
     let currentPath = '.';
 
-    const availableCommands = ['help', 'clear', 'echo', 'date', 'ls', 'cat', 'cd', 'mkdir', 'touch', 'rm', 'mv', 'ps', 'ping', 'grep'];
+    const availableCommands = ['help', 'clear', 'echo', 'date', 'ls', 'cat', 'cd', 'mkdir', 'touch', 'rm', 'mv', 'ps', 'ping', 'grep', "pwd", "history", "uname"];
 
     function logToTerminal(message) {
         if (message === null || typeof message === 'undefined') return;
@@ -52,6 +52,25 @@ export function initializeTerminal() {
             const path = args[0] ? resolveClientPath(args[0]) : currentPath;
             const data = await kernel.syscall('fs.readDir', { path });
             return data.join('  ');
+        },
+
+        // Afișează calea curentă.
+        pwd: (args, context) => {
+            // currentPath este deja menținut de terminal
+            return currentPath;
+        },
+
+        // Afișează istoricul comenzilor.
+        history: (args, context) => {
+            // commandHistory este deja menținut de terminal
+            // Folosim slice(1) pentru a exclude comanda 'history' curentă.
+            // reverse() pentru a afișa de la cea mai veche la cea mai nouă.
+            return commandHistory.slice(1).reverse().map((cmd, i) => ` ${i + 1}\t${cmd}`).join('\n');
+        },
+
+        // Afișează un nume simulat pentru sistem.
+        uname: (args, context) => {
+            return 'WebOS Kernel Version 1.0';
         },
 
         cat: async (args, context) => {
@@ -114,6 +133,15 @@ export function initializeTerminal() {
                 result += `\n${pid}\t${table[pid].name}`;
             }
             return result;
+        },
+        cp: async (args, context) => {
+            const [source, destination] = args;
+            if (!source || !destination) throw new Error('cp: missing operand');
+
+            const sourcePath = resolveClientPath(source);
+            const destinationPath = resolveClientPath(destination);
+            await kernel.syscall('fs.copy', { source: sourcePath, destination: destinationPath });
+            return null;
         },
 
         ping: async (args, context) => {

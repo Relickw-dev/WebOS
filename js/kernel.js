@@ -96,6 +96,8 @@ export const kernel = {
                 return await apiRequest('rm', 'POST', { path: params.path });
             case 'fs.move':
                 return await apiRequest('mv', 'POST', { source: params.source, destination: params.destination });
+            case 'fs.copy':
+                return await apiRequest('copy', 'POST', { source: params.source, destination: params.destination });
 
             default:
                 throw new Error(`Unknown syscall: ${call}`);

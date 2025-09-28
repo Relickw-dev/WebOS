@@ -108,6 +108,22 @@ app.post('/api/rm', async (req, res) => {
     }
 });
 
+app.post('/api/copy', async (req, res) => {
+    try {
+        const { source, destination } = req.body;
+        if (!source || !destination) throw new Error('cp: missing operand');
+
+        const absoluteSource = securePath(source);
+        const absoluteDestination = securePath(destination);
+
+        // fs.cp este modern și poate copia recursiv foldere
+        await fs.cp(absoluteSource, absoluteDestination, { recursive: true });
+        res.json({ success: true });
+    } catch (error) {
+        res.status(400).json({ error: error.message || `cp: cannot copy` });
+    }
+});
+
 // --- ENDPOINT NOU PENTRU 'mv' ---
 app.post('/api/mv', async (req, res) => {
     try {
