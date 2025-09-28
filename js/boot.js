@@ -9,10 +9,10 @@ const promptElement = document.getElementById('prompt');
 // --- STAREA TERMINALULUI ---
 const commandHistory = [];
 let historyIndex = -1;
-let currentPath = '.'; // Acum calea este relativă la rădăcina proiectului
+let currentPath = '.'; // Directorul curent, menținut pe client
 
 // --- LISTA DE COMENZI PENTRU AUTO-COMPLETARE ---
-const availableCommands = ['help', 'clear', 'echo', 'date', 'ls', 'cat']; // Am scos cd și mkdir momentan
+const availableCommands = ['help', 'clear', 'echo', 'date', 'ls', 'cat', 'cd', 'mkdir'];
 
 // --- FUNCȚII UTILITARE ---
 function logToTerminal(message) {
@@ -21,7 +21,26 @@ function logToTerminal(message) {
 }
 
 function updatePrompt() {
-    promptElement.textContent = `user@webos:${currentPath}$`;
+    const displayPath = currentPath === '.' ? '~' : currentPath;
+    promptElement.textContent = `user@webos:${displayPath}$`;
+}
+
+function resolveClientPath(targetPath) {
+    if (targetPath.startsWith('/')) {
+        return targetPath.substring(1) || '.';
+    }
+    const pathParts = currentPath === '.' ? [] : currentPath.split('/');
+    const targetParts = targetPath.split('/').filter(p => p);
+
+    for (const part of targetParts) {
+        if (part === '..') {
+            pathParts.pop();
+        } else if (part !== '.') {
+            pathParts.push(part);
+        }
+    }
+    let newPath = pathParts.join('/');
+    return newPath === '' ? '.' : newPath;
 }
 
 // --- LOGICA COMENZILOR ---
@@ -31,35 +50,71 @@ const commands = {
     echo: args => logToTerminal(args.join(' ')),
     date: () => logToTerminal(new Date().toLocaleString()),
 
-    // Comanda 'ls' modificată
     ls: async (args) => {
         const path = args[0] || currentPath;
         try {
-            // Trimite cerere la server
             const response = await fetch(`http://localhost:3000/api/files?path=${encodeURIComponent(path)}`);
             const data = await response.json();
             if (!response.ok) throw new Error(data.error);
-            
             logToTerminal(data.join('  '));
         } catch (error) {
             logToTerminal(error.message);
         }
     },
 
-    // Comanda 'cat' modificată
     cat: async (args) => {
-        const path = args[0];
-        if (!path) {
+        const pathArg = args[0];
+        if (!pathArg) {
             logToTerminal('cat: missing operand');
             return;
         }
+        const fullPath = pathArg.startsWith('.') ? resolveClientPath(pathArg) : `${currentPath}/${pathArg}`.replace('./', '');
         try {
-            // Trimite cerere la server
-            const response = await fetch(`http://localhost:3000/api/cat?path=${encodeURIComponent(path)}`);
+            const response = await fetch(`http://localhost:3000/api/cat?path=${encodeURIComponent(fullPath)}`);
             const data = await response.json();
             if (!response.ok) throw new Error(data.error);
-
             logToTerminal(data.content);
+        } catch (error) {
+            logToTerminal(error.message);
+        }
+    },
+
+    cd: async (args) => {
+        const targetPath = args[0];
+        if (!targetPath) {
+            currentPath = '.';
+            return;
+        }
+        const newPath = resolveClientPath(targetPath);
+        try {
+            const response = await fetch('http://localhost:3000/api/checkdir', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: newPath })
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error);
+            currentPath = newPath;
+        } catch (error) {
+            logToTerminal(error.message);
+        }
+    },
+
+    mkdir: async (args) => {
+        const dirName = args[0];
+        if (!dirName) {
+            logToTerminal('mkdir: missing operand');
+            return;
+        }
+        const fullPath = `${currentPath}/${dirName}`.replace('./', '');
+        try {
+            const response = await fetch('http://localhost:3000/api/mkdir', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: fullPath })
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error);
         } catch (error) {
             logToTerminal(error.message);
         }
@@ -70,21 +125,18 @@ async function processCommand(commandStr) {
     commandHistory.unshift(commandStr);
     historyIndex = -1;
     logToTerminal(`${promptElement.textContent} ${commandStr}`);
-
     const [cmd, ...args] = commandStr.trim().split(' ');
     if (commands[cmd]) {
-        // Folosim await pentru comenzile care comunică cu serverul
         await commands[cmd](args);
     } else {
         logToTerminal(`Command not found: ${cmd}.`);
     }
-    updatePrompt(); // Actualizăm promptul după fiecare comandă
+    updatePrompt();
 }
 
-// --- EVENT LISTENERS (Rămân la fel) ---
+// Event Listeners
 container.addEventListener('click', () => input.focus());
-
-input.addEventListener('keydown', async (e) => { // Funcția devine async
+input.addEventListener('keydown', async (e) => {
     if (e.key === 'Enter') {
         const command = input.value.trim();
         if (command) {
@@ -107,7 +159,6 @@ input.addEventListener('keydown', async (e) => { // Funcția devine async
             input.value = '';
         }
     } else if (e.key === 'Tab') {
-        // Logica de autocomplete rămâne la fel
         e.preventDefault();
         const partialCmd = input.value.split(' ')[0];
         const matches = availableCommands.filter(c => c.startsWith(partialCmd));
@@ -121,6 +172,6 @@ input.addEventListener('keydown', async (e) => { // Funcția devine async
 });
 
 // --- INIȚIALIZARE ---
-logToTerminal('WebOS Terminal v3.0 (Server-Connected). Type "help".');
+logToTerminal('WebOS Terminal v3.1. Commands `cd` and `mkdir` are now available.');
 updatePrompt();
 input.focus();
