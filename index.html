@@ -3,16 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebOS Boot</title>
+    <title>WebOS Terminal</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <main id="container">
-        <div id="terminal">
+    <main id="container" tabindex="0"> <div id="terminal">
             <div id="terminal-output"></div>
             <div class="prompt-line">
-                <span>&gt;</span>
-                <input type="text" id="terminal-input" autofocus />
+                <span id="prompt"></span> 
+                <input type="text" id="terminal-input" />
             </div>
         </div>
     </main>
