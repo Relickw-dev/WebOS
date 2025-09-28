@@ -11,28 +11,51 @@ export function initializeTerminal() {
     const commandHistory = [];
     let historyIndex = -1;
     let currentPath = '.';
-    let jobCounter = 1;
+    
+    // --- SISTEM DE JOBURI ---
+    let jobs = {}; // Tabela de joburi (procese din background)
+    let nextJobId = 1;
+    let isCommandRunning = false; // Blochează prompt-ul în timpul execuției foreground
 
-    const availableCommands = ['help', 'clear', 'echo', 'date', 'ls', 'cat', 'cd', 'mkdir', 'touch', 'rm', 'mv', 'ps', 'ping', 'grep', 'pwd', 'history', 'uname'];
+    const availableCommands = [
+        'help', 'clear', 'echo', 'date', 'ls', 'cat', 'cd', 'mkdir', 
+        'touch', 'rm', 'mv', 'ps', 'grep', 'pwd', 'history', 'uname',
+        'jobs', 'kill', 'sleep' // Comenzi noi
+    ];
 
     function logToTerminal(message) {
         if (message === null || typeof message === 'undefined') return;
-        output.innerHTML += `<p style="white-space: pre-wrap;">${message}</p>`;
+        // Păstrează formatarea spațiilor multiple și a liniilor noi
+        const formattedMessage = message.toString().replace(/ /g, '&nbsp;');
+        output.innerHTML += `<p style="white-space: pre-wrap;">${formattedMessage}</p>`;
         output.scrollTop = output.scrollHeight;
     }
 
     function updatePrompt() {
-        const displayPath = currentPath === '.' ? '~' : `~/${currentPath}`;
-        promptElement.textContent = `user@webos:${displayPath}$`;
+        if (isCommandRunning) {
+            promptElement.parentElement.style.display = 'none';
+        } else {
+            const displayPath = currentPath === '.' ? '~' : `~/${currentPath.replace(/^\.\//, '')}`;
+            promptElement.textContent = `user@webos:${displayPath}$`;
+            promptElement.parentElement.style.display = 'flex';
+            input.focus();
+        }
     }
 
     function resolveClientPath(targetPath) {
-        if (targetPath.startsWith('/')) return targetPath.substring(1) || '.';
+        if (!targetPath) return currentPath;
+        if (targetPath.startsWith('/')) {
+            return targetPath.substring(1) || '.';
+        }
         const pathParts = currentPath === '.' ? [] : currentPath.split('/');
         const targetParts = targetPath.split('/').filter(p => p);
+
         for (const part of targetParts) {
-            if (part === '..') pathParts.pop();
-            else if (part !== '.') pathParts.push(part);
+            if (part === '..') {
+                pathParts.pop();
+            } else if (part !== '.') {
+                pathParts.push(part);
+            }
         }
         let newPath = pathParts.join('/');
         return newPath === '' ? '.' : newPath;
@@ -43,17 +66,110 @@ export function initializeTerminal() {
         clear: (args, context) => { output.innerHTML = ''; return null; },
         echo: (args, context) => args.join(' ').replace(/^"|"$/g, '').replace(/\\n/g, '\n'),
         date: (args, context) => new Date().toLocaleString(),
-        pwd: (args, context) => currentPath,
-        history: (args, context) => commandHistory.slice(1).reverse().map((cmd, i) => ` ${i + 1}\t${cmd}`).join('\n'),
-        uname: (args, context) => 'WebOS Kernel Version 1.0',
+        pwd: (args, context) => currentPath === '.' ? '/' : `/${currentPath}`,
+        history: (args, context) => commandHistory.slice().reverse().map((cmd, i) => ` ${i + 1}\t${cmd}`).join('\n'),
+        uname: (args, context) => 'WebOS Kernel Version 1.1 (Advanced Process Management)',
+
+        // --- COMENZI NOI ȘI ACTUALIZATE ---
+        jobs: async (args, context) => {
+            const procTable = await kernel.syscall('proc.list');
+            let result = '';
+            
+            for (const jid in jobs) {
+                const job = jobs[jid];
+                const mainProcess = procTable[job.pids[0]];
+                
+                if (mainProcess) {
+                     result += `[${jid}] ${mainProcess.status}\t${job.commandStr}\n`;
+                } else {
+                    // Dacă procesul nu mai e în tabela kernel-ului, îl curățăm
+                    delete jobs[jid];
+                }
+            }
+            return result.trim() || 'No active jobs.';
+        },
+        
+        ps: async (args, context) => {
+            const table = await kernel.syscall('proc.list');
+            const pids = Object.keys(table);
+            let result = 'PID\tSTATUS\t\tCOMMAND';
+            if (pids.length === 0) return result;
+            for (const pid of pids) {
+                const proc = table[pid];
+                result += `\n${pid}\t${proc.status.padEnd(8, ' ')}\t${proc.commandStr || proc.name}`;
+            }
+            return result;
+        },
+        
+        kill: async (args, context) => {
+            const pidToKill = parseInt(args[0], 10);
+            if (isNaN(pidToKill)) throw new Error('kill: usage: kill <pid>');
+            
+            const success = await kernel.syscall('proc.kill', { pid: pidToKill });
+            if (!success) throw new Error(`kill: (${pidToKill}) - No such process`);
+            
+            // Eliminăm și din lista de joburi dacă e cazul
+            for (const jid in jobs) {
+                if (jobs[jid].pids.includes(pidToKill)) {
+                    delete jobs[jid];
+                    break;
+                }
+            }
+            logToTerminal(`Process ${pidToKill} terminated.`);
+            return null;
+        },
+
+        sleep: (args, context) => {
+            const ms = parseInt(args[0] || 1000, 10);
+            if (isNaN(ms)) throw new Error('sleep: invalid time');
+            return new Promise(resolve => setTimeout(() => resolve(`Slept for ${ms}ms.`), ms));
+        },
 
         ls: async (args, context) => {
-            const path = args[0] ? resolveClientPath(args[0]) : currentPath;
-            const data = await kernel.syscall('fs.readDir', { path });
-            return data.join('  ');
+            // 1. Parsăm argumentele pentru a separa opțiunile de cale
+            const isRecursive = args.includes('-R');
+            const pathArg = args.find(arg => !arg.startsWith('-')); // Găsim primul argument care nu este o opțiune
+            const path = pathArg ? resolveClientPath(pathArg) : currentPath;
+
+            // 2. Funcție recursivă pentru listare
+            const listRecursively = async (currentPath, depth = 0) => {
+                let result = '';
+                const indent = '  '.repeat(depth);
+
+                try {
+                    const entries = await kernel.syscall('fs.readDir', { path: currentPath });
+                    
+                    for (const entry of entries) {
+                        result += `${indent}${entry}\n`;
+                        // Dacă este director și avem flag-ul recursiv
+                        if (entry.endsWith('/') && isRecursive) {
+                            const nextPath = `${currentPath}/${entry}`.replace(/\/+/g, '/').replace(/\/$/, '');
+                            // Apel recursiv pentru subdirector
+                            result += await listRecursively(nextPath, depth + 1);
+                        }
+                    }
+                } catch (e) {
+                    // Dacă un subdirector nu poate fi accesat, afișăm eroarea și continuăm
+                    return `${indent}ls: cannot access '${currentPath}': ${e.message}\n`;
+                }
+                return result;
+            };
+
+            // 3. Executăm funcția corespunzătoare
+            if (isRecursive) {
+                const output = await listRecursively(path);
+                return output.trim();
+            } else {
+                // Comportamentul original, non-recursiv
+                const data = await kernel.syscall('fs.readDir', { path });
+                return data.join('  ');
+            }
         },
         cat: async (args, context) => {
-            if (args.length === 0) return context.stdin;
+            if (args.length === 0) {
+                if (context.stdin) return context.stdin;
+                throw new Error('cat: missing file operand');
+            }
             const pathArg = args[0];
             const fullPath = resolveClientPath(pathArg);
             const data = await kernel.syscall('fs.readFile', { path: fullPath });
@@ -95,30 +211,22 @@ export function initializeTerminal() {
             await kernel.syscall('fs.move', { source: sourcePath, destination: destinationPath });
             return null;
         },
-        ps: async (args, context) => {
-            const table = await kernel.syscall('proc.list');
-            const pids = Object.keys(table);
-            let result = 'PID\tCOMMAND';
-            if (pids.length === 0) return result;
-            for (const pid of pids) {
-                result += `\n${pid}\t${table[pid].name}`;
-            }
-            return result;
-        },
         grep: (args, context) => {
             const pattern = args[0];
             if (!pattern) throw new Error('grep: missing pattern');
-            if (!context.stdin) return '';
-            return context.stdin.split('\n').filter(line => line.includes(pattern)).join('\n');
+            const input = context.stdin;
+            if (input === null || typeof input === 'undefined') {
+                return ''; // Dacă nu există input, returnează un string gol
+            }
+            return input.toString().split('\n').filter(line => line.includes(pattern)).join('\n');
         }
     };
     
-    // --- PARSER ACTUALIZAT ---
     function parseCommandLine(commandStr) {
         let isBackground = false;
         if (commandStr.trim().endsWith('&')) {
             isBackground = true;
-            commandStr = commandStr.trim().slice(0, -1).trim(); // Elimină '&'
+            commandStr = commandStr.trim().slice(0, -1).trim();
         }
 
         const pipeline = commandStr.split('|').map(s => s.trim());
@@ -127,11 +235,11 @@ export function initializeTerminal() {
         for (const cmdPart of pipeline) {
             let parts = cmdPart.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
             let [cmd, ...args] = parts.map(p => p.replace(/"/g, ''));
-            let stdout = 'terminal';
+            let stdout = { type: 'terminal' };
             
             const redirectIndex = args.indexOf('>');
-            if (redirectIndex !== -1) {
-                stdout = { type: 'redirect', file: args[redirectIndex + 1] };
+            if (redirectIndex !== -1 && args[redirectIndex + 1]) {
+                stdout = { type: 'redirect', file: resolveClientPath(args[redirectIndex + 1]) };
                 args.splice(redirectIndex, 2);
             }
             
@@ -141,14 +249,23 @@ export function initializeTerminal() {
     }
 
     async function processCommand(commandStr) {
+        if (isCommandRunning) return;
+
         commandHistory.unshift(commandStr);
         historyIndex = -1;
         logToTerminal(`${promptElement.textContent} ${commandStr}`);
         
+        isCommandRunning = true;
+        updatePrompt();
+        
         try {
             const { pipeline, background } = parseCommandLine(commandStr);
             if(pipeline.length > 0 && pipeline[0].name) {
-                const commandFunctions = pipeline.map(p => ({ ...p, logic: commands[p.name] }));
+                const commandFunctions = pipeline.map(p => ({
+                    ...p,
+                    logic: commands[p.name],
+                    fullCmd: `${p.name} ${p.args.join(' ')}`.trim()
+                }));
 
                 for (const cmd of commandFunctions) {
                     if (!cmd.logic) throw new Error(`Command not found: ${cmd.name}`);
@@ -160,24 +277,36 @@ export function initializeTerminal() {
                     logFunction: logToTerminal
                 });
 
-                if (background && result && result.pid) {
-                    logToTerminal(`[${jobCounter++}] ${result.pid}`);
+                if (background && result && result.pids) {
+                    const jid = nextJobId++;
+                    jobs[jid] = { pids: result.pids, commandStr };
+                    logToTerminal(`[${jid}] ${result.pids.join(' ')}`);
                 }
             }
         } catch (error) {
             logToTerminal(error.message);
+        } finally {
+            isCommandRunning = false;
+            updatePrompt();
         }
-        
-        updatePrompt();
     }
 
-    // Event Listeners (neschimbate)
-    container.addEventListener('click', () => input.focus());
+    // Event Listeners
+    container.addEventListener('click', () => {
+        if (!isCommandRunning) input.focus();
+    });
+
     input.addEventListener('keydown', async (e) => {
+        if (isCommandRunning) return;
+
         if (e.key === 'Enter') {
             const command = input.value.trim();
-            if (command) await processCommand(command);
             input.value = '';
+            if (command) {
+                await processCommand(command);
+            } else {
+                updatePrompt();
+            }
         } else if (e.key === 'ArrowUp') {
             e.preventDefault();
             if (historyIndex < commandHistory.length - 1) {
@@ -195,18 +324,23 @@ export function initializeTerminal() {
             }
         } else if (e.key === 'Tab') {
             e.preventDefault();
-            const partialCmd = input.value.split(' ')[0];
-            const matches = availableCommands.filter(c => c.startsWith(partialCmd));
+            const currentInput = input.value;
+            const parts = currentInput.split(' ');
+            const partial = parts[parts.length - 1];
+            
+            const matches = availableCommands.filter(c => c.startsWith(partial));
+            
             if (matches.length === 1) {
-                input.value = matches[0];
+                parts[parts.length - 1] = matches[0];
+                input.value = parts.join(' ') + ' ';
             } else if (matches.length > 1) {
-                logToTerminal(`${promptElement.textContent} ${input.value}`);
+                logToTerminal(`${promptElement.textContent} ${currentInput}`);
                 logToTerminal(matches.join('  '));
+                updatePrompt();
             }
         }
     });
 
-    logToTerminal('WebOS Terminal v6.1 (Background Jobs).');
+    logToTerminal('WebOS Terminal v7.0 (Advanced Process Management).');
     updatePrompt();
-    input.focus();
 }
