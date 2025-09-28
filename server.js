@@ -77,16 +77,19 @@ app.post('/api/checkdir', async (req, res) => {
     }
 });
 
-// --- ENDPOINT NOU PENTRU 'touch' ---
+// --- ENDPOINT MODIFICAT PENTRU 'touch'/'writeFile' ---
 app.post('/api/touch', async (req, res) => {
     try {
         const relativePath = req.body.path;
+        // Primim și conținut; dacă nu există, va fi un string gol (comportament de touch)
+        const content = req.body.content || ''; 
         if (!relativePath) throw new Error('touch: missing file operand');
+        
         const absolutePath = securePath(relativePath);
-        await fs.writeFile(absolutePath, ''); // Creează un fișier gol
+        await fs.writeFile(absolutePath, content);
         res.json({ success: true });
     } catch (error) {
-        res.status(400).json({ error: error.message || `touch: cannot create file` });
+        res.status(400).json({ error: error.message || `cannot write to file` });
     }
 });
 

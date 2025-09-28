@@ -2,31 +2,21 @@
 
 import { startBootSequence } from './boot.js';
 
-// --- GESTIUNEA PROCESELOR (Process Management) ---
 let processTable = {};
 let nextPid = 1;
-
-
-// --- KERNEL API & SYSTEM CALLS ---
 
 const SERVER_URL = 'http://localhost:3000/api';
 
 async function apiRequest(endpoint, method = 'GET', body = null) {
     try {
-        const options = {
-            method,
-            headers: {}
-        };
+        const options = { method, headers: {} };
         if (body) {
             options.headers['Content-Type'] = 'application/json';
             options.body = JSON.stringify(body);
         }
-
         const response = await fetch(`${SERVER_URL}/${endpoint}`, options);
         const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.error);
-        }
+        if (!response.ok) throw new Error(data.error);
         return data;
     } catch (error) {
         throw new Error(error.message || 'Connection to server failed.');
@@ -38,27 +28,60 @@ export const kernel = {
         console.log(`Syscall: ${call}`, params);
 
         switch (call) {
-            // --- System Calls pentru Procese ---
-            case 'proc.run': {
-                const pid = nextPid++;
-                processTable[pid] = { name: params.name, status: 'running' };
-                try {
-                    // Executăm logica comenzii primită de la terminal
-                    const result = await params.logic(params.args);
-                    return result;
-                } finally {
-                    // Odată ce comanda s-a terminat (chiar dacă a dat eroare), procesul este eliminat
-                    delete processTable[pid];
-                    console.log(`Process ${pid} (${params.name}) finished.`);
+            case 'proc.run': // Wrapper simplu pentru pipeline cu o singură comandă
+                return await this.syscall('proc.pipeline', {
+                    pipeline: [{...params, stdout: 'terminal'}],
+                    logFunction: params.logFunction
+                });
+
+            case 'proc.pipeline': {
+                let stdin = null; // stdin pentru prima comandă este null
+
+                for (let i = 0; i < params.pipeline.length; i++) {
+                    const procInfo = params.pipeline[i];
+                    let stdout = '';
+                    
+                    const context = {
+                        stdin: stdin,
+                        log: params.logFunction // Pentru comenzi ca 'ping' care scriu direct
+                    };
+
+                    const pid = nextPid++;
+                    processTable[pid] = { name: procInfo.name, status: 'running' };
+
+                    try {
+                        const output = await procInfo.logic(procInfo.args, context);
+                        if(output) stdout = output;
+                    } catch(e) {
+                         params.logFunction(e.message); // Afișăm eroarea în terminal
+                         delete processTable[pid];
+                         return; // Oprim pipeline-ul la eroare
+                    } finally {
+                        delete processTable[pid];
+                    }
+
+                    // Pregătim input-ul pentru următoarea comandă
+                    stdin = stdout;
+
+                    // Dacă este ultima comandă
+                    if (i === params.pipeline.length - 1) {
+                        if (procInfo.stdout.type === 'redirect') {
+                            await this.syscall('fs.writeFile', { path: procInfo.stdout.file, content: stdout });
+                        } else {
+                            params.logFunction(stdout);
+                        }
+                    }
                 }
+                return;
             }
             
-            case 'proc.list': {
-                // Returnează o copie a tabelei de procese pentru a preveni modificarea directă
+            case 'proc.list':
                 return Promise.resolve({ ...processTable });
-            }
 
-            // --- System Calls pentru File System ---
+            case 'fs.writeFile': // Syscall nou pentru scriere
+                return await apiRequest('touch', 'POST', { path: params.path, content: params.content });
+            
+            // ... restul syscalls (neschimbate) ...
             case 'fs.readDir':
                 return await apiRequest(`files?path=${encodeURIComponent(params.path)}`);
             case 'fs.readFile':
@@ -80,6 +103,5 @@ export const kernel = {
     }
 };
 
-// --- Inițializarea Sistemului ---
 console.log("Kernel loaded. Starting boot sequence...");
 startBootSequence();
