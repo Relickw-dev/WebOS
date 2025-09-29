@@ -1,6 +1,5 @@
 // File: js/terminal.js
-import { syscall } from './kernel/syscalls.js';
-import { on } from './kernel/core.js';
+import { on, exec } from './kernel/core.js'; // Schimbare: Am importat 'exec'
 
 let terminalOutput;
 let terminalInput;
@@ -24,15 +23,11 @@ const commandLogicPaths = {
     'help': '/js/procs/help.js',
 };
 
-// **Schimbare crucială: Inițializare autonomă**
-// Codul va aștepta automat ca DOM-ul să fie gata înainte de a se rula.
-// Schimbăm selectorul de la '.terminal' la '#terminal'
 export function initTerminal() {
     terminalOutput = document.getElementById('terminal-output');
     terminalInput = document.getElementById('terminal-input');
     currentLine = document.getElementById('current-line');
     
-    // Verifică dacă elementele au fost găsite
     if (terminalOutput && terminalInput && currentLine) {
         terminalInput.addEventListener('keydown', handleInput);
         document.getElementById('terminal').addEventListener('click', () => terminalInput.focus());
@@ -136,13 +131,15 @@ async function executeCommand(commandString) {
             stage.logicPath = commandLogicPaths[stage.name];
         }
         
-        await syscall('proc.pipeline', {
+        // --- MODIFICARE CHEIE ---
+        // Am înlocuit apelul direct la syscall cu noua funcție 'exec' din kernel.
+        await exec(
             pipeline,
-            onOutput: (data) => logToTerminal(data),
-            onDone: (exitCode) => {
+            (data) => logToTerminal(data),
+            (exitCode) => {
                 newPromptLine();
             }
-        });
+        );
         
     } catch (e) {
         logToTerminal({ type: 'error', message: e.message });

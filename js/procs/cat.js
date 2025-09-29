@@ -1,49 +1,30 @@
 // File: js/procs/cat.js
 
-/**
- * Logica pentru comanda 'cat'.
- * @param {string[]} args - Argumentele comenzii (ex: ['file.txt']).
- * @param {object} context - Contextul procesului.
- * @param {function} context.syscall - Funcția pentru a apela syscalls.
- * @param {MessagePort} context.stdin - Portul pentru a citi input-ul.
- * @param {MessagePort} context.stdout - Portul pentru a scrie output-ul.
- */
-export default async function catLogic(args, context) {
-  const { syscall, stdin, stdout } = context;
+// CORECTURĂ: Am șters "import { syscall } from '../kernel/syscalls.js';"
+// Procesul primește obiectul `syscall` ca argument, nu trebuie să-l importe.
 
-  // Funcție pentru a procesa și trimite conținutul
-  const processContent = (content) => {
-    stdout.postMessage(String(content));
-  };
+async function main(args, syscall) { // CORECTURĂ: Am adăugat 'syscall' ca al doilea argument
+    // Verificare de siguranță
+    if (!syscall) {
+        // Nu putem face nimic fără syscall, nici măcar să raportăm o eroare.
+        console.error("Eroare critică: Obiectul syscall nu a fost furnizat procesului 'cat'.");
+        return; 
+    }
 
-  try {
-    if (args.length > 0) {
-      // Citește din fișierele specificate în argumente
-      for (const file of args) {
-        const result = await syscall('fs.readFile', { path: file });
-        processContent(result.content);
-      }
-    } else {
-      // Citește din stdin dacă nu sunt specificate fișiere
-      stdin.onmessage = (e) => {
-        if (e.data.type === 'error') {
-            stdout.postMessage(e.data);
-        } else {
-            processContent(e.data);
+    if (args.length === 0) {
+        await syscall('stderr', 'cat: missing operand');
+        return;
+    }
+
+    for (const path of args) {
+        try {
+            // Folosim obiectul syscall primit ca argument
+            const data = await syscall('vfs.read', { path });
+            await syscall('stdout', data);
+        } catch (e) {
+            await syscall('stderr', `cat: ${path}: ${e.message}`);
         }
-      };
-      // Așteaptă ca stdin să fie închis de procesul anterior
     }
-  } catch (e) {
-    const errorMsg = `cat: ${e.message}\n`;
-    stdout.postMessage({ type: 'error', message: errorMsg });
-  } finally {
-    // Dacă am citit din fișiere, închidem stdout imediat.
-    // Dacă citim din stdin, așteptăm ca celălalt capăt să închidă conexiunea.
-    if (args.length > 0) {
-      stdout.close();
-    }
-  }
-
-  return 0; // Exit code
 }
+
+export default main;

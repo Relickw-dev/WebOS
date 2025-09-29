@@ -1,8 +1,9 @@
 // File: js/kernel/core.js
 
 import { dmesg } from '../utils/logger.js';
+// CORECTURĂ: Am importat funcționalitățile VFS.
+import * as vfs from '../vfs/client.js';
 
-const syscallHandlers = new Map();
 const eventListeners = new Map();
 const processes = new Map();
 let nextPid = 1;
@@ -37,9 +38,11 @@ async function handleSyscallFromWorker(pid, syscallData) {
 
     if (handlers && handlers.length > 0) {
         try {
-            const augmentedParams = { ...params, pid };
+            const augmentedParams = (typeof params === 'object' && params !== null && !Array.isArray(params))
+                ? { ...params, pid }
+                : { data: params, pid };
+
             const result = await new Promise((resolve, reject) => {
-                // Presupunem că handler-ul este asincron și folosește resolve/reject
                 handlers[0](augmentedParams, resolve, reject);
             });
             
@@ -50,14 +53,15 @@ async function handleSyscallFromWorker(pid, syscallData) {
         } catch (error) {
             const proc = processes.get(pid);
             if (proc) {
-                proc.worker.postMessage({ type: 'syscall.result', id, error: { message: error.message } });
+                proc.worker.postMessage({ type: 'syscall.result', id, error: { message: error.message, stack: error.stack } });
             }
         }
     } else {
         dmesg(`Unknown syscall '${name}' from pid ${pid}`, 'warn');
         const proc = processes.get(pid);
         if (proc) {
-           proc.worker.postMessage({ type: 'syscall.result', id, error: { message: `Unknown syscall: ${name}` } });
+           const error = new Error(`Unknown syscall: ${name}`);
+           proc.worker.postMessage({ type: 'syscall.result', id, error: { message: error.message, stack: error.stack } });
         }
     }
 }
@@ -75,11 +79,10 @@ function handleProcExit(pid, exitCode) {
 }
 
 function setupSyscallHandlers() {
-    // Handler pentru crearea unui lanț de procese (chiar dacă e doar unul)
+    // Handler pentru procese
     on('proc.pipeline', async (params, resolve) => {
         const { pipeline, onOutput, onDone } = params;
         
-        // Simplificare: deocamdată gestionăm doar prima comandă din pipeline
         if (!pipeline || pipeline.length === 0) {
             if (onDone) onDone(0);
             return resolve();
@@ -109,7 +112,7 @@ function setupSyscallHandlers() {
                 case 'proc.crash':
                     dmesg(`proc ${pid} crashed: ${data.error.message}`, 'error');
                     console.error('Stack trace:', data.error.stack);
-                    handleProcExit(pid, 1); // Non-zero exit code for crash
+                    handleProcExit(pid, 1);
                     break;
             }
         };
@@ -119,7 +122,6 @@ function setupSyscallHandlers() {
             handleProcExit(newPid, 1);
         };
 
-        // Trimite mesajul de inițializare cu structura corectă
         worker.postMessage({
             type: 'init',
             pid: newPid,
@@ -129,7 +131,7 @@ function setupSyscallHandlers() {
         resolve(newPid);
     });
 
-    // Handler pentru I/O standard
+    // Handler pentru I/O
     on('stdout', (params, resolve) => {
         const proc = processes.get(params.pid);
         if (proc && proc.onOutput) {
@@ -141,9 +143,58 @@ function setupSyscallHandlers() {
     on('stderr', (params, resolve) => {
         const proc = processes.get(params.pid);
         if (proc && proc.onOutput) {
-            // Trimitem ca obiect de eroare pentru a putea fi stilizat diferit in terminal
             proc.onOutput({ type: 'error', message: params.data });
         }
         resolve();
+    });
+
+    // --- CORECTURĂ: Am adăugat VFS Syscall Handlers ---
+    // Acestea conectează cererile proceselor la sistemul de fișiere.
+    on('vfs.read', async ({ path }, resolve, reject) => {
+        try {
+            const data = await vfs.readFile(path);
+            resolve(data);
+        } catch (e) {
+            reject(e);
+        }
+    });
+
+    on('vfs.write', async ({ path, data }, resolve, reject) => {
+        try {
+            await vfs.writeFile(path, data);
+            resolve();
+        } catch (e) {
+            reject(e);
+        }
+    });
+
+    on('vfs.mkdir', async ({ path }, resolve, reject) => {
+        try {
+            await vfs.mkdir(path);
+            resolve();
+        } catch (e) {
+            reject(e);
+        }
+    });
+    
+    on('vfs.readdir', async ({ path }, resolve, reject) => {
+        try {
+            const files = await vfs.readdir(path);
+            resolve(files);
+        } catch (e) {
+            reject(e);
+        }
+    });
+}
+
+// Funcția 'exec' pentru compatibilitate cu terminal.js
+export function exec(pipeline, onOutput, onDone) {
+    return new Promise((resolve, reject) => {
+        try {
+            trigger('proc.pipeline', { pipeline, onOutput, onDone }, resolve, reject);
+        } catch (e) {
+            console.error("Error triggering proc.pipeline from exec:", e);
+            reject(e);
+        }
     });
 }

@@ -1,63 +1,82 @@
 // File: js/kernel/process_worker.js
 
-let pid = -1;
-const ongoingSyscalls = new Map();
-let nextSyscallId = 0;
+let pid;
+let syscall;
 
-function syscall(name, params = {}) {
-    return new Promise((resolve, reject) => {
-        const syscallId = nextSyscallId++;
-        ongoingSyscalls.set(syscallId, { resolve, reject });
-
-        postMessage({
-            type: 'syscall',
-            pid: pid,
-            syscall: {
-                id: syscallId,
-                name: name,
-                params: params
-            }
-        });
-    });
-}
-
+/**
+ * Acest handler primește mesajele de la kernel (core.js)
+ * 'init': Pornește un nou proces.
+ * 'syscall.result': Primește rezultatul unui apel de sistem.
+ */
 self.onmessage = async (e) => {
     const { type, ...data } = e.data;
 
-    if (type === 'init') {
-        pid = data.pid;
-        const { logicPath, args } = data.proc; // Această linie va funcționa acum
-        
-        try {
-            const module = await import(logicPath);
-            const commandFunction = module.default;
+    switch (type) {
+        case 'init':
+            pid = data.pid;
+            const proc = data.proc;
             
-            if (typeof commandFunction !== 'function') {
-                throw new Error(`The module ${logicPath} does not have a default export that is a function.`);
+            // Creează interfața de syscalls pentru acest proces
+            syscall = createSyscallInterface(pid);
+            
+            try {
+                // Importă dinamic modul procesului folosind calea primită
+                const module = await import(proc.logicPath);
+                // Apelează funcția 'main' exportată de modul
+                await module.default(proc.args, syscall);
+                // Trimite mesaj de ieșire cu succes
+                self.postMessage({ type: 'proc.exit', pid, exitCode: 0 });
+            } catch (error) {
+                // Trimite mesaj de eroare critică (crash)
+                self.postMessage({ type: 'proc.crash', pid, error: { message: error.message, stack: error.stack } });
             }
+            break;
 
-            const exitCode = await commandFunction(args, syscall);
-            
-            postMessage({ type: 'proc.exit', pid: pid, exitCode: exitCode || 0 });
+        case 'syscall.result':
+            // Răspunsul de la kernel a sosit, trimite-l handler-ului
+            syscall.handleResult(data);
+            break;
+    }
+};
 
-        } catch (error) {
-            postMessage({ 
-                type: 'proc.crash', 
-                pid: pid, 
-                error: { message: error.message, stack: error.stack }
+/**
+ * Creează și returnează funcțiile pe care un proces le poate folosi
+ * pentru a comunica cu kernel-ul.
+ */
+function createSyscallInterface(pid) {
+    let nextSyscallId = 0;
+    const pendingSyscalls = new Map();
+
+    // Funcția principală 'syscall' pe care o va apela procesul
+    const syscallFunction = (name, params) => {
+        return new Promise((resolve, reject) => {
+            const id = nextSyscallId++;
+            pendingSyscalls.set(id, { resolve, reject });
+            // Trimite cererea de syscall către kernel
+            self.postMessage({
+                type: 'syscall',
+                pid,
+                syscall: { id, name, params }
             });
-        }
+        });
+    };
 
-    } else if (type === 'syscall.result') {
-        const { id, result, error } = data;
-        const promise = ongoingSyscalls.get(id);
+    // Funcție atașată pentru a gestiona răspunsurile de la kernel
+    syscallFunction.handleResult = ({ id, result, error }) => {
+        const promise = pendingSyscalls.get(id);
         if (promise) {
-            if (error) {
-                promise.reject(new Error(error.message));
+            if (error && error.message) {
+                const err = new Error(error.message);
+                err.stack = error.stack; 
+                promise.reject(err);
+            } else if (error) {
+                promise.reject(new Error(String(error)));
             } else {
                 promise.resolve(result);
             }
-            ongoingSyscalls.delete(id);
+            pendingSyscalls.delete(id);
         }
-    }
-};
+    };
+
+    return syscallFunction;
+}
