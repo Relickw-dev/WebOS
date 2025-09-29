@@ -1,7 +1,7 @@
 // File: js/kernel/core.js
+
 import { log } from '../utils/logger.js';
 import * as vfs from '../vfs/client.js';
-import * as scheduler from './scheduler.js';
 
 let processTable = {};
 let nextPid = 1;
@@ -11,7 +11,7 @@ const eventHandlers = {};
 /**
  * Emite un eveniment (apelează un syscall) și returnează o promisiune
  * care se va rezolva cu rezultatul handler-ului.
- * @param {string} eventName - Numele syscall-ului (ex: 'proc.pipeline').
+ * @param {string} eventName - Numele syscall-ului (ex: 'fs.readFile').
  * @param {object} params - Parametrii pentru syscall.
  * @returns {Promise<any>}
  */
@@ -52,27 +52,79 @@ export function initKernel() {
   log('info', 'Kernel initialized');
 }
 
-export function spawnProcess({ name='proc', ppid = 0, args=[], logic = null, meta = {} }) {
+/**
+ * Modificat pentru a lansa un Web Worker.
+ * @param {object} params
+ * @param {string} params.name - Numele procesului.
+ * @param {string} params.logicPath - Calea către fișierul JS cu logica procesului.
+ * @param {Array} params.args - Argumentele pentru proces.
+ * @param {number} [params.ppid=0] - Parent Process ID.
+ * @param {object} [params.meta={}] - Metadate.
+ */
+export function spawnProcess({ name = 'proc', ppid = 0, args = [], logicPath = null, meta = {} }) {
+  if (!logicPath) {
+    throw new Error("spawnProcess requires a 'logicPath' to the worker script.");
+  }
+
   const pid = nextPid++;
+  // Creăm un nou Worker. Acesta este momentul în care procesul este "creat".
+  const worker = new Worker('/js/kernel/process_worker.js', { type: 'module' });
+
   const proc = {
     pid,
     ppid,
     name,
     args,
     status: 'created',
-    startTime: null,
+    startTime: Date.now(),
     endTime: null,
     exitCode: null,
     cpuTicks: 0,
-    logic,
+    worker, // Stocăm referința la worker
     meta,
-    signalHandlers: {}, // name -> handler fn
-    signalQueue: [],
-    cancelled: false,
-    iterator: null, // <<< MODIFICARE: Adăugat pentru a stoca starea generatorului
   };
   processTable[pid] = proc;
-  log('info', `spawned ${pid} ${proc.name} ${proc.args.join(' ')}`);
+
+  // --- KERNEL-UL ASCULTĂ MESAJE DE LA PROCES (WORKER) ---
+  worker.onmessage = (e) => {
+    const { type, ...data } = e.data;
+    switch (type) {
+      // 1. Procesul a cerut un apel de sistem
+      case 'syscall':
+        emit(data.name, data.params)
+          .then(result => {
+            // Trimitem rezultatul înapoi la worker
+            worker.postMessage({ type: 'syscall_result', callId: data.callId, result });
+          })
+          .catch(error => {
+            // Trimitem eroarea înapoi la worker
+            worker.postMessage({ type: 'syscall_error', callId: data.callId, error: error.message });
+          });
+        break;
+      
+      // 2. Procesul s-a terminat normal
+      case 'exit':
+        exitProcess(pid, data.code);
+        break;
+
+      // 3. Procesul a crăpat (a avut o eroare neprinsă)
+      case 'error':
+        log('error', `proc ${pid} crashed: ${data.message}`);
+        exitProcess(pid, 1); // Cod de ieșire generic pentru eroare
+        break;
+    }
+  };
+
+  // --- KERNEL-UL TRIMITE MESAJUL DE INIȚIALIZARE PROCESULUI ---
+  worker.postMessage({
+    type: 'init',
+    pid: pid,
+    args: args,
+    logicPath: logicPath, // Trimitem calea către logica pe care trebuie să o încarce
+  });
+  
+  proc.status = 'running'; // Procesul rulează imediat ce worker-ul pornește
+  log('info', `spawned worker for pid=${pid} name=${proc.name}`);
   return proc;
 }
 
@@ -81,16 +133,25 @@ export function getProcess(pid) {
 }
 
 export function listProcesses() {
-  return JSON.parse(JSON.stringify(processTable));
+  // Returnează o copie a tabelului de procese, fără referința la worker
+  const plainProcessTable = {};
+  for(const pid in processTable) {
+    const { worker, ...procDetails } = processTable[pid];
+    plainProcessTable[pid] = procDetails;
+  }
+  return plainProcessTable;
 }
 
 export function exitProcess(pid, code = 0) {
   const proc = processTable[pid];
-  if (!proc) return false;
+  if (!proc || proc.status === 'done' || proc.status === 'killed') return false;
+  
+  proc.worker.terminate(); // Oprim worker-ul!
+  
   proc.status = 'done';
   proc.exitCode = code;
   proc.endTime = Date.now();
-  delete proc.iterator; // <<< MODIFICARE: Curățăm iteratorul la ieșire
+
   if (waiters[pid]) {
     for (const res of waiters[pid]) res({ pid, exitCode: code });
     delete waiters[pid];
@@ -100,19 +161,20 @@ export function exitProcess(pid, code = 0) {
 }
 
 export function killProcess(pid, signalCode = 9) {
-  const proc = processTable[pid];
-  if (!proc) return false;
-  proc.status = 'killed';
-  proc.exitCode = 128 + (signalCode || 9);
-  proc.endTime = Date.now();
-  proc.cancelled = true;
-  delete proc.iterator; // <<< MODIFICARE: Curățăm iteratorul la kill
-  if (waiters[pid]) {
-    for (const res of waiters[pid]) res({ pid, exitCode: proc.exitCode });
-    delete waiters[pid];
-  }
-  log('warn', `process ${pid} killed (signal=${signalCode})`);
-  return true;
+    const proc = processTable[pid];
+    if (!proc) return false;
+    
+    proc.worker.terminate(); // Oprim worker-ul!
+
+    proc.status = 'killed';
+    proc.exitCode = 128 + signalCode;
+    proc.endTime = Date.now();
+    if (waiters[pid]) {
+        for (const res of waiters[pid]) res({ pid, exitCode: proc.exitCode });
+        delete waiters[pid];
+    }
+    log('warn', `process ${pid} killed (signal=${signalCode})`);
+    return true;
 }
 
 export function waitForExit(pid) {
@@ -127,147 +189,34 @@ export function waitForExit(pid) {
   });
 }
 
+// Funcționalitatea de semnale trebuie regândită într-un model cu workers,
+// deocamdată o lăsăm schelet.
 export function sendSignal(pid, sig) {
-  const proc = processTable[pid];
-  if (!proc) return false;
-  proc.signalQueue.push(sig);
-  const handler = proc.signalHandlers[sig];
-  if (typeof handler === 'function') {
-    try {
-      handler(sig);
-    } catch (e) {
-      log('error', `signal handler for ${pid} threw: ${e.message}`);
+    const proc = getProcess(pid);
+    if (!proc) return false;
+    // Într-o implementare viitoare, am trimite un mesaj worker-ului
+    log('warn', `Signal handling for workers is not fully implemented. (PID: ${pid}, Signal: ${sig})`);
+    if (sig === 'SIGKILL') {
+        killProcess(pid, 9);
     }
-  } else {
-    if (sig === 'SIGTERM' || sig === 'SIGKILL') {
-      killProcess(pid, sig === 'SIGKILL' ? 9 : 15);
-      return true;
-    }
-    if (sig === 'SIGINT') {
-      proc.cancelled = true;
-      killProcess(pid, 2);
-      return true;
-    }
-  }
-  return true;
-}
-
-export function registerSignalHandler(pid, sigName, handler) {
-  const proc = processTable[pid];
-  if (!proc) return false;
-  proc.signalHandlers[sigName] = handler;
-  return true;
-}
-
-export function unregisterSignalHandler(pid, sigName) {
-  const proc = processTable[pid];
-  if (!proc) return false;
-  delete proc.signalHandlers[sigName];
-  return true;
+    return true;
 }
 
 /**
  * Înregistrează toți handler-ii pentru apelurile de sistem.
- * Această funcție centralizează logica kernel-ului.
  */
 export function setupProcessHandlers() {
   // === HANDLERE PROCESE (proc.*) ===
 
-  /**
-   * Handler pentru 'proc.pipeline'.
-   * Transformă întregul pipeline într-un singur proces "executor" care este adăugat
-   * în scheduler-ul principal, făcând astfel pipeline-ul complet preemptiv.
-   */
-  on('proc.pipeline', async (params, resolve, reject) => {
-    const { pipeline, logFunction, stdin, cwd, background } = params;
-
-    // 1. Definim logica pentru noul nostru "super-proces" executor.
-    // Aceasta este o funcție generator care va orchestra întregul pipeline.
-    const pipelineExecutorLogic = async function* (args, context) {
-      let currentStdin = stdin;
-
+  on('proc.spawn', (params, resolve, reject) => {
       try {
-        // Iterează prin fiecare comandă (etapă) din pipeline
-        for (let i = 0; i < pipeline.length; i++) {
-          const stage = pipeline[i];
-
-          // Creează un context specific pentru această etapă
-          const stageContext = {
-            stdin: currentStdin,
-            stdout: stage.stdout,
-            pid: context.pid, // Folosim PID-ul procesului executor
-            cwd: cwd,
-          };
-
-          // Obține iteratorul pentru logica comenzii curente (ex: ls, cat, etc.)
-          const commandIterator = stage.logic(stage.args, stageContext);
-          
-          // Rulează comanda curentă pas cu pas, cedând controlul după fiecare pas
-          let commandResult = await commandIterator.next();
-          while (!commandResult.done) {
-            commandResult = await commandIterator.next();
-            yield; // <<< MODIFICARE CHEIE: Cedează controlul scheduler-ului principal!
-          }
-
-          // Salvează output-ul comenzii pentru a-l folosi ca input pentru următoarea
-          const stdout = commandResult.value;
-
-          // Gestionează redirectarea output-ului
-          if (stage.stdout.type === 'redirect') {
-            await emit('fs.writeFile', {
-              path: stage.stdout.file,
-              content: stdout,
-              append: stage.stdout.append,
-            });
-            currentStdin = null; // Output-ul a fost redirectat, nu se mai pasează
-          } else if (stage.stdout.type === 'terminal') {
-            // Dacă este ultima comandă din pipeline, afișează rezultatul
-            if (i === pipeline.length - 1 && logFunction && stdout) {
-              logFunction(String(stdout));
-            }
-            currentStdin = stdout;
-          } else {
-            currentStdin = stdout;
-          }
-        }
-        return 0; // Exit code de succes pentru întregul pipeline
+          const proc = spawnProcess(params);
+          // Rezolvăm cu o versiune "simplificată" a obiectului proces, fără worker
+          const { worker, ...procDetails } = proc;
+          resolve(procDetails);
       } catch (e) {
-        const errorMessage = e && e.message ? e.message : String(e);
-        const formattedError = `Error: ${errorMessage}\n`;
-        if (logFunction) {
-          logFunction(formattedError);
-        }
-        throw e; // Aruncă eroarea pentru a fi prinsă și a returna un exit code de eroare
+          reject(e);
       }
-    };
-
-    // 2. Creăm un singur proces pentru acest executor
-    const executorProc = spawnProcess({
-      name: pipeline.map(p => p.name).join(' | '),
-      logic: pipelineExecutorLogic,
-      meta: { fullCmd: pipeline.map(p => p.fullCmd).join(' | ') },
-    });
-
-    // 3. Adăugăm procesul executor în coada scheduler-ului pentru a rula
-    scheduler.enqueue(executorProc);
-
-    // 4. Dacă procesul nu este în background, așteptăm finalizarea lui.
-    //    Dacă este în background, rezolvăm imediat cu PID-ul.
-    if (!background) {
-      waitForExit(executorProc.pid)
-        .then(exitStatus => resolve({ pids: [executorProc.pid], status: exitStatus.exitCode === 0 ? 'completed' : 'error' }))
-        .catch(reject);
-    } else {
-      resolve({ pids: [executorProc.pid], status: 'background' });
-    }
-  });
-
-  on('proc.spawn', (params, resolve) => {
-      const proc = spawnProcess(params);
-      if (params.enqueue) {
-        scheduler.enqueue(proc);
-      }
-      resolve(proc);
   });
 
   on('proc.list', (params, resolve) => resolve(listProcesses()));
@@ -276,7 +225,6 @@ export function setupProcessHandlers() {
   on('proc.sendSignal', (params, resolve) => resolve(sendSignal(params.pid, params.signal)));
 
   // === HANDLERE SISTEM DE FIȘIERE (fs.*) ===
-  // ... restul handlerelor rămân neschimbate ...
   on('fs.readDir', async (params, resolve, reject) => {
       try {
           resolve(await vfs.readDir(params.path, params.options || {}));
