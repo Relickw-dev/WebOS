@@ -33,6 +33,9 @@ export async function syscall(name, params) {
             throw e;
         }
     } else {
+        // --- DEBUG ---
+        // Acest mesaj se va afișa exact înainte de eroare.
+        console.error(`[DEBUG] Încercare de apelare a unui syscall necunoscut: ${name}`);
         throw new Error(`Unknown syscall: ${name}`);
     }
 }

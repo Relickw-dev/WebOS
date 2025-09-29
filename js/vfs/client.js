@@ -37,11 +37,7 @@ export async function mkdir(path, createParents=false) {
   return await requestJson('mkdir', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ path, createParents }) });
 }
 export async function remove(path, force = false, recursive = false) {
-    // Endpoint-ul de pe server este '/rm' (conform fs_api.js)
-    return await requestJson('/rm', {
-        method: 'POST',
-        body: { path, force, recursive },
-    });
+    return requestJson('rm', {method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ path, force, recursive }) });
 }
 export async function cp(source, destination, recursive=false) {
   return await requestJson('copy', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ source, destination, recursive }) });
@@ -49,3 +45,5 @@ export async function cp(source, destination, recursive=false) {
 export async function mv(source, destination) {
   return await requestJson('mv', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ source, destination }) });
 }
+
+console.log('[DEBUG] Modulul js/vfs/client.js a fost încărcat și exportă funcțiile.');

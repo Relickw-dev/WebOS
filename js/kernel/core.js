@@ -3,6 +3,7 @@
 import { dmesg } from '../utils/logger.js';
 // CORECTURĂ: Am importat funcționalitățile VFS.
 import * as vfs from '../vfs/client.js';
+import { syscall } from './syscalls.js';
 
 const eventListeners = new Map();
 const processes = new Map();
@@ -27,6 +28,7 @@ export function initKernel() {
     dmesg('Kernel initializing...');
     setupSyscallHandlers();
     dmesg('Syscall handlers registered.');
+
     dmesg('Kernel initialized.');
     return Promise.resolve();
 }
@@ -182,6 +184,19 @@ function setupSyscallHandlers() {
             const files = await vfs.readdir(path);
             resolve(files);
         } catch (e) {
+            reject(e);
+        }
+    });
+
+    on('vfs.rm', async ({ path, force, recursive }, resolve, reject) => {
+        try {
+            // Apelăm funcția de ștergere din modulul VFS
+            await vfs.remove(path, force, recursive);
+            
+            // Semnalăm că operațiunea s-a încheiat cu succes
+            resolve({ success: true });
+        } catch (e) {
+            // În caz de eroare, o transmitem mai departe
             reject(e);
         }
     });

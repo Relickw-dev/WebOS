@@ -99,12 +99,25 @@ router.post('/touch', async (req, res) => {
 
 router.post('/rm', async (req, res) => {
   try {
-    const { path: rel, force } = req.body;
+    // Citim toți parametrii necesari din corpul cererii.
+    const { path: rel, force, recursive } = req.body;
     if (!rel) throw { code: 'EINVAL', message: 'rm: missing operand' };
+    
     const abs = securePath(rel);
-    await fs.rm(abs, { recursive: true, force: !!force });
+    
+    // Verificăm dacă ținta este un director.
+    const stat = await fs.stat(abs);
+    if (stat.isDirectory() && !recursive) {
+        // Dacă este director și nu s-a specificat '-r', returnăm eroare.
+        throw { code: 'EISDIR', message: 'Is a directory' };
+    }
+
+    // Apelăm fs.rm cu opțiunile corecte primite de la client.
+    await fs.rm(abs, { recursive: !!recursive, force: !!force });
     res.json({ success: true });
-  } catch (e) { res.status(400).json({ code: e.code || 'EIO', error: e.message }); }
+  } catch (e) { 
+    res.status(400).json({ code: e.code || 'EIO', error: e.message }); 
+  }
 });
 
 router.post('/copy', async (req, res) => {
