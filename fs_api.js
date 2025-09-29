@@ -7,11 +7,25 @@ const router = express.Router();
 
 const virtualRoot = path.join(process.cwd(), 'fs_root');
 
+// --- AICI ESTE MODIFICAREA CRITICĂ ---
+// Am înlocuit path.resolve cu path.join și path.normalize
+// pentru a combina corect calea de bază cu cea de la client,
+// chiar și atunci când calea de la client începe cu '/'.
 function securePath(relativePath) {
   const safeRelative = relativePath || '.';
-  const abs = path.resolve(virtualRoot, safeRelative);
-  if (!abs.startsWith(virtualRoot)) throw { code: 'EACCES', message: 'Access denied' };
-  return abs;
+  
+  // path.join combină corect căile, prevenind interpretarea greșită.
+  const joinedPath = path.join(virtualRoot, safeRelative);
+  
+  // path.normalize rezolvă segmentele '..' și '.' pentru securitate sporită.
+  const normalizedPath = path.normalize(joinedPath);
+
+  // Verificarea de securitate este esențială pentru a nu ieși din 'fs_root'.
+  if (!normalizedPath.startsWith(virtualRoot)) {
+    throw { code: 'EACCES', message: 'Access denied' };
+  }
+  
+  return normalizedPath;
 }
 
 router.post('/files', async (req, res) => {
@@ -60,17 +74,14 @@ router.post('/mkdir', async (req, res) => {
   } catch (e) { res.status(400).json({ code: e.code || 'EIO', error: e.message }); }
 });
 
-// Aici am făcut modificarea: app.post -> router.post
 router.post('/touch', async (req, res) => {
     try {
         const { path: filePath, content = '', append = false } = req.body;
         const fullPath = securePath(filePath);
 
         if (append) {
-            // Dacă 'append' este true, adaugă la fișier
             await fs.appendFile(fullPath, content);
         } else {
-            // Altfel, suprascrie fișierul
             await fs.writeFile(fullPath, content);
         }
 
