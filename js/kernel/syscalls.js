@@ -42,7 +42,7 @@ export async function syscall(call, params = {}) {
           if (i === pipeline.length - 1) {
             if (stdout.type === 'redirect') {
               // Aici este modificarea crucială
-              await vfs.writeFile(stdout.file, out, stdout.append);
+              await syscall('fs.writeFile', { path: stdout.file, content: out, append: stdout.append });
             } else {
               logFunction(out);
             }
@@ -74,7 +74,7 @@ export async function syscall(call, params = {}) {
     case 'fs.readDir': return await vfs.readDir(params.path, params.options || {});
     case 'fs.readFile': return await vfs.readFile(params.path);
     case 'fs.writeFile': {
-      return await vfs.writeFile(params.path, params.content || '', params.append);
+      return await vfs.writeFile(params.path, params.content, params.append);
     }
     case 'fs.makeDir': return await vfs.mkdir(params.path, params.createParents);
     case 'fs.touchFile': return await vfs.writeFile(params.path, params.content || '');
