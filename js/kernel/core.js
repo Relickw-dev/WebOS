@@ -173,98 +173,92 @@ export function unregisterSignalHandler(pid, sigName) {
 export function setupProcessHandlers() {
   // === HANDLERE PROCESE (proc.*) ===
 
-  on('proc.pipeline', async (params, resolve) => {
-    const { pipeline, logFunction, stdin, cwd } = params;
-    const pids = [];
-    const procs = [];
-    let currentStdin = stdin;
+  /**
+   * Handler pentru 'proc.pipeline'.
+   * Transformă întregul pipeline într-un singur proces "executor" care este adăugat
+   * în scheduler-ul principal, făcând astfel pipeline-ul complet preemptiv.
+   */
+  on('proc.pipeline', async (params, resolve, reject) => {
+    const { pipeline, logFunction, stdin, cwd, background } = params;
 
-    try {
-      for (let i = 0; i < pipeline.length; i++) {
-        const stage = pipeline[i];
-        const proc = spawnProcess({
-            name: stage.name,
-            logic: stage.logic,
-            meta: { fullCmd: stage.fullCmd }
-        });
+    // 1. Definim logica pentru noul nostru "super-proces" executor.
+    // Aceasta este o funcție generator care va orchestra întregul pipeline.
+    const pipelineExecutorLogic = async function* (args, context) {
+      let currentStdin = stdin;
 
-        pids.push(proc.pid);
-        procs.push(proc);
-        proc.cwd = cwd;
+      try {
+        // Iterează prin fiecare comandă (etapă) din pipeline
+        for (let i = 0; i < pipeline.length; i++) {
+          const stage = pipeline[i];
 
-        proc.execute = async () => {
-          try {
-            const context = {
-              stdin: currentStdin,
-              stdout: stage.stdout,
-              pid: proc.pid,
-              cwd: proc.cwd,
-            };
+          // Creează un context specific pentru această etapă
+          const stageContext = {
+            stdin: currentStdin,
+            stdout: stage.stdout,
+            pid: context.pid, // Folosim PID-ul procesului executor
+            cwd: cwd,
+          };
 
-            // <<< START MODIFICARE CRITICĂ: Execuția Generatorului >>>
-            // Logica nu mai este un simplu 'await', ci trebuie iterată.
-            let stdout = '';
-            if (typeof proc.logic === 'function') {
-              // Inițiem iteratorul/generatorul.
-              const iterator = proc.logic(stage.args, context);
-              
-              // Consumăm iteratorul până la final.
-              // '.next()' returnează o promisiune, deci folosim await.
-              let result = await iterator.next();
-              while (!result.done) {
-                // Deoarece acest executor este secvențial și nu este scheduler-ul,
-                // pur și simplu continuăm la următorul pas fără a ceda controlul
-                // altor procese. Doar respectăm protocolul generatorului.
-                result = await iterator.next();
-              }
-              // Valoarea finală este returnată la încheierea generatorului.
-              stdout = result.value;
-            }
-            // <<< FINAL MODIFICARE CRITICĂ >>>
-
-            if (stage.stdout.type === 'redirect') {
-                await emit('fs.writeFile', {
-                    path: stage.stdout.file,
-                    content: stdout,
-                    append: stage.stdout.append,
-                });
-                return null;
-            } else if (stage.stdout.type === 'terminal') {
-               if (i === pipeline.length - 1 && logFunction && stdout) {
-                logFunction(String(stdout));
-              }
-            }
-            return stdout;
-
-          } catch (e) {
-            const errorMessage = e && e.message ? e.message : String(e);
-            const formattedError = `Error: ${errorMessage}\n`;
-            if (logFunction) {
-              logFunction(formattedError);
-            } else {
-              console.error(`[PID ${proc.pid}] ${formattedError}`);
-            }
-            throw new Error('Pipeline execution stopped due to error.');
+          // Obține iteratorul pentru logica comenzii curente (ex: ls, cat, etc.)
+          const commandIterator = stage.logic(stage.args, stageContext);
+          
+          // Rulează comanda curentă pas cu pas, cedând controlul după fiecare pas
+          let commandResult = await commandIterator.next();
+          while (!commandResult.done) {
+            commandResult = await commandIterator.next();
+            yield; // <<< MODIFICARE CHEIE: Cedează controlul scheduler-ului principal!
           }
-        };
-      }
 
-      for (const proc of procs) {
-        proc.status = 'running';
-        currentStdin = await proc.execute();
-        proc.status = 'stopped';
-        exitProcess(proc.pid, 0);
-      }
+          // Salvează output-ul comenzii pentru a-l folosi ca input pentru următoarea
+          const stdout = commandResult.value;
 
-      resolve({ pids, status: 'completed' });
-
-    } catch (e) {
-      pids.forEach(pid => {
-        if (getProcess(pid)) {
-          killProcess(pid);
+          // Gestionează redirectarea output-ului
+          if (stage.stdout.type === 'redirect') {
+            await emit('fs.writeFile', {
+              path: stage.stdout.file,
+              content: stdout,
+              append: stage.stdout.append,
+            });
+            currentStdin = null; // Output-ul a fost redirectat, nu se mai pasează
+          } else if (stage.stdout.type === 'terminal') {
+            // Dacă este ultima comandă din pipeline, afișează rezultatul
+            if (i === pipeline.length - 1 && logFunction && stdout) {
+              logFunction(String(stdout));
+            }
+            currentStdin = stdout;
+          } else {
+            currentStdin = stdout;
+          }
         }
-      });
-      resolve({ pids, status: 'error', error: e.message });
+        return 0; // Exit code de succes pentru întregul pipeline
+      } catch (e) {
+        const errorMessage = e && e.message ? e.message : String(e);
+        const formattedError = `Error: ${errorMessage}\n`;
+        if (logFunction) {
+          logFunction(formattedError);
+        }
+        throw e; // Aruncă eroarea pentru a fi prinsă și a returna un exit code de eroare
+      }
+    };
+
+    // 2. Creăm un singur proces pentru acest executor
+    const executorProc = spawnProcess({
+      name: pipeline.map(p => p.name).join(' | '),
+      logic: pipelineExecutorLogic,
+      meta: { fullCmd: pipeline.map(p => p.fullCmd).join(' | ') },
+    });
+
+    // 3. Adăugăm procesul executor în coada scheduler-ului pentru a rula
+    scheduler.enqueue(executorProc);
+
+    // 4. Dacă procesul nu este în background, așteptăm finalizarea lui.
+    //    Dacă este în background, rezolvăm imediat cu PID-ul.
+    if (!background) {
+      waitForExit(executorProc.pid)
+        .then(exitStatus => resolve({ pids: [executorProc.pid], status: exitStatus.exitCode === 0 ? 'completed' : 'error' }))
+        .catch(reject);
+    } else {
+      resolve({ pids: [executorProc.pid], status: 'background' });
     }
   });
 
@@ -281,9 +275,8 @@ export function setupProcessHandlers() {
   on('proc.wait', (params, resolve) => waitForExit(params.pid).then(resolve));
   on('proc.sendSignal', (params, resolve) => resolve(sendSignal(params.pid, params.signal)));
 
-
   // === HANDLERE SISTEM DE FIȘIERE (fs.*) ===
-  // ... restul handlerelor fs rămân neschimbate ...
+  // ... restul handlerelor rămân neschimbate ...
   on('fs.readDir', async (params, resolve, reject) => {
       try {
           resolve(await vfs.readDir(params.path, params.options || {}));
