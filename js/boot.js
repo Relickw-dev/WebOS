@@ -1,5 +1,6 @@
 // File: js/boot.js
-import { initKernel } from './kernel/core.js';
+// --- MODIFICARE CHEIE: Importă setupProcessHandlers ---
+import { initKernel, setupProcessHandlers } from './kernel/core.js';
 import { startScheduler } from './kernel/scheduler.js';
 import { initializeTerminal } from './terminal.js';
 import { log } from './utils/logger.js';
@@ -13,6 +14,13 @@ export async function startBootSequence() {
   bootLog('Initializing kernel...');
   initKernel();
   await new Promise(r => setTimeout(r, 100));
+  
+  // --- MODIFICARE CHEIE: Înregistrează handler-ele ---
+  bootLog('Setting up process handlers...');
+  setupProcessHandlers(); // Aici activăm logica pentru 'proc.pipeline'
+  await new Promise(r => setTimeout(r, 100));
+  // --- SFÂRȘIT MODIFICARE ---
+
   bootLog('Starting scheduler...');
   startScheduler();
   await new Promise(r => setTimeout(r, 100));

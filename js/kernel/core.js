@@ -1,14 +1,54 @@
 // File: js/kernel/core.js
 import { log } from '../utils/logger.js';
+import * as vfs from '../vfs/client.js';
+import * as scheduler from './scheduler.js';
 
 let processTable = {};
 let nextPid = 1;
 const waiters = {}; // pid -> [resolve,...]
+const eventHandlers = {};
+
+/**
+ * Emite un eveniment (apelează un syscall) și returnează o promisiune
+ * care se va rezolva cu rezultatul handler-ului.
+ * @param {string} eventName - Numele syscall-ului (ex: 'proc.pipeline').
+ * @param {object} params - Parametrii pentru syscall.
+ * @returns {Promise<any>}
+ */
+export function emit(eventName, params) {
+  return new Promise((resolve, reject) => {
+    const handler = eventHandlers[eventName];
+    if (handler) {
+      try {
+        // Handler-ul primește parametrii și funcțiile de rezolvare/respingere
+        handler(params, resolve, reject);
+      } catch (e) {
+        log('error', `Syscall handler for ${eventName} failed: ${e.message}`);
+        reject(e);
+      }
+    } else {
+      const errorMsg = `No handler for syscall ${eventName}`;
+      log('error', errorMsg);
+      reject(new Error(errorMsg));
+    }
+  });
+}
+
+/**
+ * Înregistrează un handler pentru un syscall specific.
+ * @param {string} eventName - Numele syscall-ului.
+ * @param {function} handler - Funcția care va gestiona apelul.
+ */
+export function on(eventName, handler) {
+  eventHandlers[eventName] = handler;
+  log('info', `Registered handler for syscall ${eventName}`);
+}
 
 export function initKernel() {
   processTable = {};
   nextPid = 1;
   for (const k in waiters) delete waiters[k];
+  for (const k in eventHandlers) delete eventHandlers[k];
   log('info', 'Kernel initialized');
 }
 
@@ -49,7 +89,6 @@ export function exitProcess(pid, code = 0) {
   proc.status = 'done';
   proc.exitCode = code;
   proc.endTime = Date.now();
-  // resolve waiters
   if (waiters[pid]) {
     for (const res of waiters[pid]) res({ pid, exitCode: code });
     delete waiters[pid];
@@ -73,7 +112,6 @@ export function killProcess(pid, signalCode = 9) {
   return true;
 }
 
-// event-based wait
 export function waitForExit(pid) {
   const proc = processTable[pid];
   if (!proc) return Promise.reject(new Error('No such process'));
@@ -86,11 +124,9 @@ export function waitForExit(pid) {
   });
 }
 
-// signal sending: supports SIGINT, SIGTERM
 export function sendSignal(pid, sig) {
   const proc = processTable[pid];
   if (!proc) return false;
-  // If handler registered, queue and call handler if present
   proc.signalQueue.push(sig);
   const handler = proc.signalHandlers[sig];
   if (typeof handler === 'function') {
@@ -100,15 +136,12 @@ export function sendSignal(pid, sig) {
       log('error', `signal handler for ${pid} threw: ${e.message}`);
     }
   } else {
-    // default actions
     if (sig === 'SIGTERM' || sig === 'SIGKILL') {
       killProcess(pid, sig === 'SIGKILL' ? 9 : 15);
       return true;
     }
     if (sig === 'SIGINT') {
-      // attempt graceful interrupt: mark canceled; logic may check context.isCancelled()
       proc.cancelled = true;
-      // if no handler, kill as fallback
       killProcess(pid, 2);
       return true;
     }
@@ -128,4 +161,143 @@ export function unregisterSignalHandler(pid, sigName) {
   if (!proc) return false;
   delete proc.signalHandlers[sigName];
   return true;
+}
+
+/**
+ * Înregistrează toți handler-ii pentru apelurile de sistem.
+ * Această funcție centralizează logica kernel-ului.
+ */
+export function setupProcessHandlers() {
+  // === HANDLERE PROCESE (proc.*) ===
+
+  on('proc.pipeline', async (params, resolve) => {
+    const { pipeline, logFunction, stdin, cwd } = params;
+    const pids = [];
+    const procs = [];
+    let currentStdin = stdin;
+
+    try {
+      for (let i = 0; i < pipeline.length; i++) {
+        const stage = pipeline[i];
+        const proc = spawnProcess({
+            name: stage.name,
+            logic: stage.logic,
+            meta: { fullCmd: stage.fullCmd }
+        });
+
+        pids.push(proc.pid);
+        procs.push(proc);
+        proc.cwd = cwd;
+
+        proc.execute = async () => {
+          try {
+            const context = {
+              stdin: currentStdin,
+              stdout: stage.stdout,
+              pid: proc.pid,
+              cwd: proc.cwd,
+            };
+            const stdout = await proc.logic(stage.args, context);
+
+            if (stage.stdout.type === 'redirect') {
+                await emit('fs.writeFile', {
+                    path: stage.stdout.file,
+                    content: stdout,
+                    append: stage.stdout.append,
+                });
+                return null;
+            } else if (stage.stdout.type === 'terminal') {
+               if (i === pipeline.length - 1 && logFunction && stdout) {
+                logFunction(stdout);
+              }
+            }
+            return stdout;
+
+          } catch (e) {
+            const errorMessage = e && e.message ? e.message : String(e);
+            const formattedError = `Error: ${errorMessage}\n`;
+            if (logFunction) {
+              logFunction(formattedError);
+            } else {
+              console.error(`[PID ${proc.pid}] ${formattedError}`);
+            }
+            throw new Error('Pipeline execution stopped due to error.');
+          }
+        };
+      }
+
+      for (const proc of procs) {
+        proc.status = 'running';
+        currentStdin = await proc.execute();
+        proc.status = 'stopped';
+        exitProcess(proc.pid, 0);
+      }
+
+      resolve({ pids, status: 'completed' });
+
+    } catch (e) {
+      pids.forEach(pid => {
+        if (getProcess(pid)) {
+          killProcess(pid);
+        }
+      });
+      resolve({ pids, status: 'error', error: e.message });
+    }
+  });
+
+  on('proc.spawn', (params, resolve) => {
+      const proc = spawnProcess(params);
+      if (params.enqueue) scheduler.enqueue(proc);
+      resolve(proc);
+  });
+
+  on('proc.list', (params, resolve) => resolve(listProcesses()));
+  on('proc.kill', (params, resolve) => resolve(killProcess(params.pid)));
+  on('proc.wait', (params, resolve) => waitForExit(params.pid).then(resolve));
+  on('proc.sendSignal', (params, resolve) => resolve(sendSignal(params.pid, params.signal)));
+
+
+  // === HANDLERE SISTEM DE FIȘIERE (fs.*) ===
+
+  on('fs.readDir', async (params, resolve, reject) => {
+      try {
+          resolve(await vfs.readDir(params.path, params.options || {}));
+      } catch (e) { reject(e); }
+  });
+  
+  on('fs.readFile', async (params, resolve, reject) => {
+      try {
+          resolve(await vfs.readFile(params.path));
+      } catch (e) { reject(e); }
+  });
+
+  on('fs.writeFile', async (params, resolve, reject) => {
+      try {
+          resolve(await vfs.writeFile(params.path, params.content, params.append));
+      } catch (e) { reject(e); }
+  });
+  
+  on('fs.makeDir', async (params, resolve, reject) => {
+      try {
+          resolve(await vfs.mkdir(params.path, params.createParents));
+      } catch (e) { reject(e); }
+  });
+
+  on('fs.remove', async (params, resolve, reject) => {
+      try {
+          resolve(await vfs.rm(params.path, params.force));
+      } catch (e) { reject(e); }
+  });
+
+  on('fs.move', async (params, resolve, reject) => {
+      try {
+          resolve(await vfs.mv(params.source, params.destination));
+      } catch (e) { reject(e); }
+  });
+
+  on('fs.copy', async (params, resolve, reject) => {
+      try {
+          resolve(await vfs.cp(params.source, params.destination, params.recursive));
+      } catch (e) { reject(e); }
+  });
 }

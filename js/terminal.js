@@ -283,16 +283,36 @@ export function initializeTerminal() {
 
       const pipeParams = { pipeline: pipelineDefs, background: parsed.background, logFunction: write, stdin, cwd };
       const res = await syscall('proc.pipeline', pipeParams);
+
+      // --- MODIFICARE CHEIE: Gestionarea erorilor returnate de syscall ---
+      // Verificăm dacă obiectul 'res' returnat de syscall conține o proprietate
+      // 'error' sau 'stderr'. Acesta este un mod robust de a prinde erorile
+      // pe care kernel-ul le-a capturat intern.
+      if (res) {
+        // Calea standard pentru erori în sisteme de operare
+        if (res.stderr) {
+          write(res.stderr);
+        } 
+        // O alternativă comună în API-uri JavaScript
+        else if (res.error) {
+          write(`Error: ${res.error}\n`);
+        }
+      }
+      // --- SFÂRȘIT MODIFICARE ---
+
       if (parsed.background && res && res.pids) {
         const jid = nextJobId++;
         jobs[jid] = { pids: res.pids, commandStr: line };
         write(`[${jid}] ${res.pids.join(' ')}\n`);
       }
     } catch (e) {
-      write(`Error: ${e.message}\n`);
+      // Am îmbunătățit și acest bloc pentru a afișa orice tip de eroare,
+      // chiar dacă nu este un obiect Error standard.
+      const errorMessage = e && e.message ? e.message : String(e);
+      write(`Error: ${errorMessage}\n`);
     }
   }
-
+  
   input.addEventListener('keydown', async (e) => {
     if (e.key === 'Enter') {
       const command = input.value;
