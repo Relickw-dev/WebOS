@@ -50,14 +50,20 @@ router.post('/files', async (req, res) => {
   }
 });
 
-router.get('/cat', async (req, res) => {
+router.post('/cat', async (req, res) => {
   try {
-    const rel = req.query.path;
+    const rel = req.body.path; // Citim calea din corpul cererii POST
     if (!rel) throw { code: 'EINVAL', message: 'cat: missing operand' };
     const abs = securePath(rel);
     const stat = await fs.stat(abs);
     if (stat.isDirectory()) throw { code: 'EISDIR', message: 'Is a directory' };
     const content = await fs.readFile(abs, 'utf8');
+    // Răspunsul este un JSON, dar clientul (syscall 'stdout') așteaptă un string direct.
+    // Presupunând că 'requestJson' pe client extrage 'content', lăsăm așa deocamdată.
+    // Clientul va primi { content: "..." }, iar funcția `vfs.read` va trebui să returneze `body.content`.
+    // Să verificăm client.js... da, `readFile` returnează tot obiectul.
+    // Iar în `cat.js`, `syscall('vfs.read', { path })` primește acest obiect.
+    // Vom ajusta și client.js pentru a fi mai curat.
     res.json({ content });
   } catch (e) {
     res.status(400).json({ code: e.code || 'EIO', error: e.message || 'cat error' });

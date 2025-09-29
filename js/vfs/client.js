@@ -24,7 +24,14 @@ export async function readDir(path, opts) {
   return await requestJson('files', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ path, options: opts }) });
 }
 export async function readFile(path) {
-  return await requestJson(`cat?path=${encodeURIComponent(path)}`, { method: 'GET' });
+  // CORECTURĂ: Am adăugat `.content` la final pentru a extrage
+  // doar textul din răspunsul JSON de la server.
+  const body = await requestJson(`cat`, { 
+    method: 'POST', 
+    headers:{'Content-Type':'application/json'}, 
+    body: JSON.stringify({ path }) 
+  });
+  return body.content; // Extragem și returnăm direct conținutul
 }
 export async function mkdir(path, createParents=false) {
   return await requestJson('mkdir', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ path, createParents }) });

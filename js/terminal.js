@@ -62,14 +62,20 @@ function updatePrompt() {
 
 function logToTerminal(message, isCommand = false) {
     const element = document.createElement('div');
-    if (typeof message === 'object' && message.type === 'error') {
-        element.innerHTML = `<span class="error">${message.message.replace(/\n/g, '<br>')}</span>`;
-    } else {
-        element.textContent = message;
-    }
+    
+    // Asigurăm că 'message' este un string înainte de a-l procesa
+    const messageString = (typeof message === 'object' && message.message) ? message.message : String(message);
+    
+    // Înlocuim toate aparițiile de '\n' cu tag-ul HTML '<br>' pentru a forța un salt la linie nouă.
+    const formattedMessage = messageString.replace(/\n/g, '<br>');
 
-    if (isCommand) {
-        element.innerHTML = `<span class="prompt">${document.getElementById('prompt').textContent}</span> ${message}`;
+    if (typeof message === 'object' && message.type === 'error') {
+        element.innerHTML = `<span class="error">${formattedMessage}</span>`;
+    } else if (isCommand) {
+        element.innerHTML = `<span class="prompt">${document.getElementById('prompt').textContent}</span> ${formattedMessage}`;
+    } else {
+        // Folosim innerHTML și pentru output-ul normal
+        element.innerHTML = formattedMessage;
     }
     
     terminalOutput.appendChild(element);
@@ -123,7 +129,30 @@ async function executeCommand(commandString) {
             newPromptLine();
             return;
         }
+
+        // --- MODIFICARE CHEIE ---
+        // Verificăm dacă ultima comandă din pipeline are o redirectare.
+        const lastStage = pipeline[pipeline.length - 1];
+        let onStdout = (data) => logToTerminal(data); // Default: afișează pe ecran
+
+        if (lastStage.redirect) {
+            const { op, file } = lastStage.redirect;
+            if (!file) {
+                throw new Error('Syntax error: No file specified for redirection.');
+            }
+            
+            // Creăm un nou handler pentru stdout care scrie în fișier.
+            onStdout = async (data) => {
+                const content = (typeof data === 'string' ? data : JSON.stringify(data)) + '\n';
+                await exec([{
+                    name: 'touch', // Folosim logica existentă din `touch` pentru a scrie
+                    logicPath: commandLogicPaths['touch'],
+                    args: [file, content, op === '>>'] // [path, content, append]
+                }]);
+            };
+        }
         
+        // Atribuim fiecărei comenzi calea către logica sa.
         for (const stage of pipeline) {
             if (!commandLogicPaths[stage.name]) {
                 throw new Error(`Command not found: ${stage.name}`);
@@ -131,15 +160,7 @@ async function executeCommand(commandString) {
             stage.logicPath = commandLogicPaths[stage.name];
         }
         
-        // --- MODIFICARE CHEIE ---
-        // Am înlocuit apelul direct la syscall cu noua funcție 'exec' din kernel.
-        await exec(
-            pipeline,
-            (data) => logToTerminal(data),
-            (exitCode) => {
-                newPromptLine();
-            }
-        );
+        await exec(pipeline, onStdout, () => newPromptLine());
         
     } catch (e) {
         logToTerminal({ type: 'error', message: e.message });
@@ -148,12 +169,41 @@ async function executeCommand(commandString) {
 }
 
 function parseCommand(input) {
-    return input.split('|').map(part => {
-        const tokens = part.trim().split(/\s+/).filter(Boolean);
-        if (tokens.length === 0) return null;
-        return {
-            name: tokens[0],
-            args: tokens.slice(1),
+    const stages = input.split('|').map(part => part.trim());
+    const pipeline = [];
+
+    for (const stageString of stages) {
+        // Găsim operatorii de redirectare și fișierul
+        const redirectMatch = stageString.match(/(>>?)\s*(\S+)$/);
+        let argsString = stageString;
+        let redirect = null;
+
+        if (redirectMatch) {
+            redirect = {
+                op: redirectMatch[1],       // '>>' sau '>'
+                file: redirectMatch[2]       // numele fișierului
+            };
+            // Eliminăm redirectarea din string-ul de argumente
+            argsString = stageString.substring(0, redirectMatch.index).trim();
+        }
+
+        const tokens = argsString.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+        if (tokens.length === 0) continue;
+
+        const command = {
+            name: tokens[0].replace(/["']/g, ''),
+            args: tokens.slice(1).map(arg => arg.replace(/["']/g, '')),
+            redirect: redirect // Adăugăm informațiile de redirectare
         };
-    }).filter(Boolean);
+        pipeline.push(command);
+    }
+    
+    // Doar ultima comandă poate avea redirectare de output
+    for(let i = 0; i < pipeline.length - 1; i++) {
+        if (pipeline[i].redirect) {
+            throw new Error("Syntax error: Redirection is only allowed for the final command in a pipeline.");
+        }
+    }
+
+    return pipeline;
 }
