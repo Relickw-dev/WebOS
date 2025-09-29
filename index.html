@@ -7,18 +7,19 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <main id="container" tabindex="0"> <div id="terminal">
+    <main id="container" tabindex="0">
+        <div id="terminal">
             <div id="terminal-output"></div>
-            <div class="prompt-line">
+            <div id="current-line" class="prompt-line">
                 <span id="prompt"></span> 
-                <input type="text" id="terminal-input" />
+                <input type="text" id="terminal-input" autocomplete="off" />
             </div>
         </div>
     </main>
     
-     <script type="module">
+    <script type="module">
         import { startBootSequence } from './js/boot.js';
-        startBootSequence();
-     </script>
+        window.addEventListener('DOMContentLoaded', startBootSequence);
+    </script>
 </body>
 </html>
