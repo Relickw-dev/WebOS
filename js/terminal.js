@@ -65,10 +65,7 @@ function updatePrompt() {
 function logToTerminal(message, isCommand = false) {
     const element = document.createElement('div');
     
-    // Asigurăm că 'message' este un string înainte de a-l procesa
     const messageString = (typeof message === 'object' && message.message) ? message.message : String(message);
-    
-    // Înlocuim toate aparițiile de '\n' cu tag-ul HTML '<br>' pentru a forța un salt la linie nouă.
     const formattedMessage = messageString.replace(/\n/g, '<br>');
 
     if (typeof message === 'object' && message.type === 'error') {
@@ -76,7 +73,6 @@ function logToTerminal(message, isCommand = false) {
     } else if (isCommand) {
         element.innerHTML = `<span class="prompt">${document.getElementById('prompt').textContent}</span> ${formattedMessage}`;
     } else {
-        // Folosim innerHTML și pentru output-ul normal
         element.innerHTML = formattedMessage;
     }
     
@@ -160,7 +156,22 @@ async function executeCommand(commandString) {
             stage.logicPath = commandLogicPaths[stage.name];
         }
         
-        await exec(pipeline, onStdout, () => newPromptLine());
+        // --- ÎNCEPUT MODIFICĂRI ---
+        
+        // Definim un callback care inspectează codul de ieșire.
+        const onDoneCallback = (exitCode) => {
+            // Verificăm dacă exitCode este un obiect și are cheia 'new_cwd'.
+            if (typeof exitCode === 'object' && exitCode !== null && exitCode.new_cwd) {
+                currentDirectory = exitCode.new_cwd;
+            }
+            // Indiferent de rezultat, afișăm prompt-ul nou.
+            newPromptLine();
+        };
+
+        // Apelăm exec pasând callback-ul și directorul curent.
+        await exec(pipeline, onStdout, onDoneCallback, currentDirectory);
+        
+        // --- SFÂRȘIT MODIFICĂRI ---
         
     } catch (e) {
         logToTerminal({ type: 'error', message: e.message });
@@ -173,17 +184,15 @@ function parseCommand(input) {
     const pipeline = [];
 
     for (const stageString of stages) {
-        // Găsim operatorii de redirectare și fișierul
         const redirectMatch = stageString.match(/(>>?)\s*(\S+)$/);
         let argsString = stageString;
         let redirect = null;
 
         if (redirectMatch) {
             redirect = {
-                op: redirectMatch[1],       // '>>' sau '>'
-                file: redirectMatch[2]       // numele fișierului
+                op: redirectMatch[1],
+                file: redirectMatch[2]
             };
-            // Eliminăm redirectarea din string-ul de argumente
             argsString = stageString.substring(0, redirectMatch.index).trim();
         }
 
@@ -193,12 +202,11 @@ function parseCommand(input) {
         const command = {
             name: tokens[0].replace(/["']/g, ''),
             args: tokens.slice(1).map(arg => arg.replace(/["']/g, '')),
-            redirect: redirect // Adăugăm informațiile de redirectare
+            redirect: redirect
         };
         pipeline.push(command);
     }
     
-    // Doar ultima comandă poate avea redirectare de output
     for(let i = 0; i < pipeline.length - 1; i++) {
         if (pipeline[i].redirect) {
             throw new Error("Syntax error: Redirection is only allowed for the final command in a pipeline.");

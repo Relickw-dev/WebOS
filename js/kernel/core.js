@@ -83,14 +83,13 @@ function handleProcExit(pid, exitCode) {
 function setupSyscallHandlers() {
     // Handler pentru procese
     on('proc.pipeline', async (params, resolve) => {
-        const { pipeline, onOutput, onDone } = params;
+        const { pipeline, onOutput, onDone, cwd } = params;
         
         if (!pipeline || pipeline.length === 0) {
             if (onDone) onDone(0);
             return resolve();
         }
         const firstProc = pipeline[0];
-
         const newPid = nextPid++;
         const worker = new Worker('/js/kernel/process_worker.js', { type: 'module' });
 
@@ -128,6 +127,7 @@ function setupSyscallHandlers() {
             type: 'init',
             pid: newPid,
             proc: firstProc,
+            cwd: cwd // Adăugăm cwd aici
         });
 
         resolve(newPid);
@@ -200,13 +200,24 @@ function setupSyscallHandlers() {
             reject(e);
         }
     });
+
+    on('vfs.stat', async ({ path }, resolve, reject) => {
+        try {
+            // Folosim clientul VFS, care va apela API-ul serverului.
+            const stats = await vfs.stat(path);
+            resolve(stats);
+        } catch (e) {
+            reject(e);
+        }
+    });
 }
 
 // Funcția 'exec' pentru compatibilitate cu terminal.js
-export function exec(pipeline, onOutput, onDone) {
+export function exec(pipeline, onOutput, onDone, cwd) { // Adăugăm cwd ca parametru
     return new Promise((resolve, reject) => {
         try {
-            trigger('proc.pipeline', { pipeline, onOutput, onDone }, resolve, reject);
+            // Pasăm 'cwd' mai departe în eveniment
+            trigger('proc.pipeline', { pipeline, onOutput, onDone, cwd }, resolve, reject);
         } catch (e) {
             console.error("Error triggering proc.pipeline from exec:", e);
             reject(e);

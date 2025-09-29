@@ -33,6 +33,13 @@ export async function readFile(path) {
   });
   return body.content; // Extragem și returnăm direct conținutul
 }
+export async function stat(path) {
+  return await requestJson('stat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path })
+  });
+}
 export async function mkdir(path, createParents=false) {
   return await requestJson('mkdir', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ path, createParents }) });
 }

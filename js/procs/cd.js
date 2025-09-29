@@ -1,44 +1,70 @@
-/*
- * cd - Change Directory (fără funcționalitate 'home')
- *
- * Gestionează strict navigarea către căile specificate.
- * Necesită obligatoriu un argument, altfel returnează o eroare.
- * Caracterul '~' nu este interpretat special.
- *
- * Se bazează pe vfs.resolve() pentru a normaliza calea și pe syz.stat()
- * pentru a valida că este un director valid.
+// File: js/procs/cd.js
+
+/**
+ * Rezolvă o cale țintă relativă la o cale de bază.
+ * Gestionează '.', '..', și căile absolute.
+ * @param {string} target - Calea de navigat (ex: '../docs', '/home').
+ * @param {string} base - Directorul curent (ex: '/usr/bin').
+ * @returns {string} Calea absolută, normalizată.
  */
-function main(args, stdout, stderr, exit, vfs, cwd) {
-  // Pas 1: Validăm că a fost furnizat un argument.
-  if (args.length < 2) {
-    stderr.write("cd: missing operand\n");
-    exit(1); // Ieșim cu un cod de eroare.
-    return;
-  }
+function resolvePath(target, base) {
+    // Căile absolute pornesc de la rădăcină.
+    const baseParts = base === '/' ? [] : base.split('/').filter(p => p);
+    const targetParts = target.split('/').filter(p => p);
 
-  const targetPath = args[1];
+    let parts = target.startsWith('/') ? [] : baseParts;
 
-  // Pas 2: Rezolvăm calea folosind VFS.
-  // vfs.resolve se va ocupa de '.', '..', căi relative și absolute.
-  const resolvedPath = vfs.resolve(targetPath, cwd);
+    for (const part of targetParts) {
+        if (part === '..') {
+            if (parts.length > 0) {
+                parts.pop();
+            }
+        } else if (part !== '.') {
+            parts.push(part);
+        }
+    }
+    
+    return '/' + parts.join('/');
+}
 
-  // Pas 3: Verificăm existența și tipul căii cu un apel de sistem.
-  syz.stat(resolvedPath, (err, stats) => {
-    if (err) {
-      // Eroare: Calea nu există în VFS.
-      stderr.write(`cd: no such file or directory: ${targetPath}\n`);
-      exit(1);
-      return;
+/**
+ * Logica pentru comanda 'cd' (change directory).
+ * Schimbă directorul curent al terminalului, având o structură similară cu 'cat.js'.
+ * @param {string[]} args - Argumentele comenzii. Primul argument este calea țintă.
+ * @param {object} context - Contextul de execuție al procesului.
+ * @param {function} context.syscall - Funcția pentru a apela syscalls.
+ * @param {MessagePort} context.stderr - Portul pentru a scrie erorile.
+ * @param {function} context.exit - Funcția pentru a termina procesul.
+ * @param {string} context.cwd - Directorul de lucru curent.
+ * @returns {Promise<number>} Exit code (0 pentru succes, 1 pentru eroare).
+ */
+export default async function cdLogic(args, context) {
+    const { syscall, stderr, exit, cwd } = context;
+
+    // 'cd' fără argumente este tratat ca un succes, ducând la '/'.
+    if (args.length === 0) {
+        exit({ new_cwd: '/' });
+        return 0;
     }
 
-    if (stats.type !== 'dir') {
-      // Eroare: Calea există, dar nu este un director.
-      stderr.write(`cd: not a directory: ${targetPath}\n`);
-      exit(1);
-      return;
-    }
+    const targetPath = args[0];
+    const newPath = resolvePath(targetPath, cwd);
 
-    // Succes: Returnăm noua cale către terminal.
-    exit({ new_cwd: resolvedPath });
-  });
+    try {
+        const stats = await syscall('vfs.stat', { path: newPath });
+        
+        if (stats.type !== 'dir') {
+            stderr.postMessage(`cd: not a directory: ${targetPath}\n`);
+            return 1; // Cod de ieșire pentru eroare
+        }
+
+        // Succes: Trimitem noua cale și ieșim cu codul 0.
+        exit({ new_cwd: newPath });
+        return 0; // Cod de ieșire pentru succes
+
+    } catch (e) {
+        // Orice eroare de la syscall (ex: calea nu există) este prinsă aici.
+        stderr.postMessage(`cd: no such file or directory: ${targetPath}\n`);
+        return 1; // Cod de ieșire pentru eroare
+    }
 }

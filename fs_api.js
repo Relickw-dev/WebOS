@@ -70,6 +70,24 @@ router.post('/cat', async (req, res) => {
   }
 });
 
+router.post('/stat', async (req, res) => {
+  try {
+    const { path: relPath } = req.body;
+    if (!relPath) {
+      throw { code: 'EINVAL', message: 'stat: missing operand' };
+    }
+    const absPath = securePath(relPath);
+    const stats = await fs.stat(absPath);
+    
+    res.json({ 
+      success: true, 
+      type: stats.isDirectory() ? 'dir' : 'file' 
+    });
+  } catch (e) {
+    res.status(400).json({ code: e.code || 'EIO', error: e.message });
+  }
+});
+
 router.post('/mkdir', async (req, res) => {
   try {
     const { path: rel, createParents } = req.body;
