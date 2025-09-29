@@ -3,7 +3,7 @@ import { SERVER_URL } from '../config.js';
 
 async function requestJson(endpoint, options = {}) {
   const res = await fetch(`${SERVER_URL}/${endpoint}`, options);
-  const body = await res.json().catch(()=>({}));
+  const body = await res.json().catch(() => ({}));
   if (!res.ok) {
     const err = new Error(body.error || 'VFS Error');
     err.code = body.code || 'EIO';
@@ -13,10 +13,10 @@ async function requestJson(endpoint, options = {}) {
 }
 
 export async function writeFile(path, content='', append=false) {
-  return await requestJson('touch', { 
-    method: 'POST', 
-    headers: { 'Content-Type': 'application/json' }, 
-    body: JSON.stringify({ path, content, append }) 
+  return await requestJson('touch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, content, append })
   });
 }
 
@@ -25,9 +25,6 @@ export async function readDir(path, opts) {
 }
 export async function readFile(path) {
   return await requestJson(`cat?path=${encodeURIComponent(path)}`, { method: 'GET' });
-}
-export async function writeFile(path, content='') {
-  return await requestJson('touch', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ path, content }) });
 }
 export async function mkdir(path, createParents=false) {
   return await requestJson('mkdir', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ path, createParents }) });

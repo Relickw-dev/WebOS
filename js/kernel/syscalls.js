@@ -41,11 +41,8 @@ export async function syscall(call, params = {}) {
 
           if (i === pipeline.length - 1) {
             if (stdout.type === 'redirect') {
-              await syscall('fs.writeFile', { 
-                path: stdout.file, 
-                content: out, 
-                append: stdout.append || false 
-              });
+              // Aici este modificarea crucială
+              await vfs.writeFile(stdout.file, out, stdout.append);
             } else {
               logFunction(out);
             }
