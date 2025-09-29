@@ -60,30 +60,24 @@ router.post('/mkdir', async (req, res) => {
   } catch (e) { res.status(400).json({ code: e.code || 'EIO', error: e.message }); }
 });
 
-app.post('/touch', (req, res) => {
-  try {
-    const { path: filePath, content = '', append = false } = req.body;
-    
-    // Asigură-te că nu se scrie în afara directorului rădăcină
-    const fsRoot = path.join(__dirname, 'fs_root');
-    const fullPath = path.join(fsRoot, filePath);
+// Aici am făcut modificarea: app.post -> router.post
+router.post('/touch', async (req, res) => {
+    try {
+        const { path: filePath, content = '', append = false } = req.body;
+        const fullPath = securePath(filePath);
 
-    if (!fullPath.startsWith(fsRoot)) {
-      return res.status(400).json({ error: 'Invalid path' });
+        if (append) {
+            // Dacă 'append' este true, adaugă la fișier
+            await fs.appendFile(fullPath, content);
+        } else {
+            // Altfel, suprascrie fișierul
+            await fs.writeFile(fullPath, content);
+        }
+
+        res.json({ success: true, path: filePath });
+    } catch (error) {
+        res.status(500).json({ error: error.message, code: error.code });
     }
-
-    if (append) {
-      // Dacă 'append' este true, ADaugă la fișier
-      fs.appendFileSync(fullPath, content);
-    } else {
-      // Altfel, SUPRASCRIE fișierul
-      fs.writeFileSync(fullPath, content);
-    }
-
-    res.json({ success: true, path: filePath });
-  } catch (error) {
-    res.status(500).json({ error: error.message, code: error.code });
-  }
 });
 
 router.post('/rm', async (req, res) => {
