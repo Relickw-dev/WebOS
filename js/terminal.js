@@ -189,8 +189,15 @@ export function initializeTerminal() {
         if (args.length === 0) throw new Error('touch: missing file operand');
         const [path] = args;
         const content = context.stdin || '';
-        const append = args.includes('>>'); // Aceasta este o presupunere, terminalul ar trebui să-l gestioneze
-        await syscall('fs.writeFile', { path, content, append: false }); // Aici e o eroare, o voi corecta imediat
+        
+        // Determină dacă trebuie să facă append.
+        // Pentru 'touch', de obicei nu se face append, dar dacă este folosit cu redirectare, contextul ar trebui să indice acest lucru.
+        // Logica de redirectare din 'proc.pipeline' ar trebui să paseze corect flag-ul 'append'.
+        // Presupunând că 'context.stdout' ar conține informații despre redirectare:
+        const append = context.stdout ? context.stdout.append : false;
+
+        // Corectarea apelului syscall pentru a respecta flag-ul 'append'
+        await syscall('fs.writeFile', { path, content, append: append });
         return '';
     },
     rm: async (args) => {

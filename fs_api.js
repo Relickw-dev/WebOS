@@ -4,6 +4,7 @@ const fs = require('fs/promises');
 const path = require('path');
 const router = express.Router();
 
+
 const virtualRoot = path.join(process.cwd(), 'fs_root');
 
 function securePath(relativePath) {
@@ -59,21 +60,29 @@ router.post('/mkdir', async (req, res) => {
   } catch (e) { res.status(400).json({ code: e.code || 'EIO', error: e.message }); }
 });
 
-router.post('/touch', async (req, res) => {
+app.post('/touch', (req, res) => {
   try {
-    const { path: rel, content = '', append = false } = req.body;
-    if (!rel) throw { code: 'EINVAL', message: 'touch: missing file operand' };
-    const abs = securePath(rel);
+    const { path: filePath, content = '', append = false } = req.body;
+    
+    // Asigură-te că nu se scrie în afara directorului rădăcină
+    const fsRoot = path.join(__dirname, 'fs_root');
+    const fullPath = path.join(fsRoot, filePath);
 
-    if (append) {
-      await fs.appendFile(abs, content);
-    } else {
-      await fs.writeFile(abs, content);
+    if (!fullPath.startsWith(fsRoot)) {
+      return res.status(400).json({ error: 'Invalid path' });
     }
 
-    res.json({ success: true });
-  } catch (e) {
-    res.status(400).json({ code: e.code || 'EIO', error: e.message });
+    if (append) {
+      // Dacă 'append' este true, ADaugă la fișier
+      fs.appendFileSync(fullPath, content);
+    } else {
+      // Altfel, SUPRASCRIE fișierul
+      fs.writeFileSync(fullPath, content);
+    }
+
+    res.json({ success: true, path: filePath });
+  } catch (error) {
+    res.status(500).json({ error: error.message, code: error.code });
   }
 });
 
