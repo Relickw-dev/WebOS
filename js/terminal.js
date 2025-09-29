@@ -22,6 +22,7 @@ const commandLogicPaths = {
     'pwd': '/js/procs/pwd.js',
     'clear': '/js/procs/clear.js',
     'help': '/js/procs/help.js',
+    'cd': '/js/procs/cd.js'
 };
 
 export function initTerminal() {
