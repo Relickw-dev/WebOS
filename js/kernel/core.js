@@ -69,6 +69,7 @@ export function spawnProcess({ name='proc', ppid = 0, args=[], logic = null, met
     signalHandlers: {}, // name -> handler fn
     signalQueue: [],
     cancelled: false,
+    iterator: null, // <<< MODIFICARE: Adăugat pentru a stoca starea generatorului
   };
   processTable[pid] = proc;
   log('info', `spawned ${pid} ${proc.name} ${proc.args.join(' ')}`);
@@ -89,6 +90,7 @@ export function exitProcess(pid, code = 0) {
   proc.status = 'done';
   proc.exitCode = code;
   proc.endTime = Date.now();
+  delete proc.iterator; // <<< MODIFICARE: Curățăm iteratorul la ieșire
   if (waiters[pid]) {
     for (const res of waiters[pid]) res({ pid, exitCode: code });
     delete waiters[pid];
@@ -104,6 +106,7 @@ export function killProcess(pid, signalCode = 9) {
   proc.exitCode = 128 + (signalCode || 9);
   proc.endTime = Date.now();
   proc.cancelled = true;
+  delete proc.iterator; // <<< MODIFICARE: Curățăm iteratorul la kill
   if (waiters[pid]) {
     for (const res of waiters[pid]) res({ pid, exitCode: proc.exitCode });
     delete waiters[pid];
@@ -197,7 +200,27 @@ export function setupProcessHandlers() {
               pid: proc.pid,
               cwd: proc.cwd,
             };
-            const stdout = await proc.logic(stage.args, context);
+
+            // <<< START MODIFICARE CRITICĂ: Execuția Generatorului >>>
+            // Logica nu mai este un simplu 'await', ci trebuie iterată.
+            let stdout = '';
+            if (typeof proc.logic === 'function') {
+              // Inițiem iteratorul/generatorul.
+              const iterator = proc.logic(stage.args, context);
+              
+              // Consumăm iteratorul până la final.
+              // '.next()' returnează o promisiune, deci folosim await.
+              let result = await iterator.next();
+              while (!result.done) {
+                // Deoarece acest executor este secvențial și nu este scheduler-ul,
+                // pur și simplu continuăm la următorul pas fără a ceda controlul
+                // altor procese. Doar respectăm protocolul generatorului.
+                result = await iterator.next();
+              }
+              // Valoarea finală este returnată la încheierea generatorului.
+              stdout = result.value;
+            }
+            // <<< FINAL MODIFICARE CRITICĂ >>>
 
             if (stage.stdout.type === 'redirect') {
                 await emit('fs.writeFile', {
@@ -208,7 +231,7 @@ export function setupProcessHandlers() {
                 return null;
             } else if (stage.stdout.type === 'terminal') {
                if (i === pipeline.length - 1 && logFunction && stdout) {
-                logFunction(stdout);
+                logFunction(String(stdout));
               }
             }
             return stdout;
@@ -247,7 +270,9 @@ export function setupProcessHandlers() {
 
   on('proc.spawn', (params, resolve) => {
       const proc = spawnProcess(params);
-      if (params.enqueue) scheduler.enqueue(proc);
+      if (params.enqueue) {
+        scheduler.enqueue(proc);
+      }
       resolve(proc);
   });
 
@@ -258,7 +283,7 @@ export function setupProcessHandlers() {
 
 
   // === HANDLERE SISTEM DE FIȘIERE (fs.*) ===
-
+  // ... restul handlerelor fs rămân neschimbate ...
   on('fs.readDir', async (params, resolve, reject) => {
       try {
           resolve(await vfs.readDir(params.path, params.options || {}));

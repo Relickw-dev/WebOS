@@ -4,7 +4,7 @@ import { log } from '../utils/logger.js';
 import { TICK_MS } from '../config.js';
 
 let tickInterval = null;
-const runQueue = []; // pid queue
+const runQueue = []; // Coada de procese (PID-uri) care trebuie rulate
 
 export function startScheduler() {
   if (tickInterval) return;
@@ -26,34 +26,52 @@ export function enqueue(proc) {
   if (p) p.status = 'queued';
 }
 
+/**
+ * Funcția centrală a scheduler-ului. Rulează o "felie" dintr-un proces.
+ */
 async function dispatch() {
   if (runQueue.length === 0) return;
+
   const pid = runQueue.shift();
   const proc = core.getProcess(pid);
-  if (!proc) return;
+
+  // Verificări de siguranță
+  if (!proc || proc.status === 'killed' || proc.status === 'done') {
+    return;
+  }
+
   try {
-    // mark running
     proc.status = 'running';
     proc.cpuTicks = (proc.cpuTicks || 0) + 1;
     if (!proc.startTime) proc.startTime = Date.now();
 
-    // prepare cooperative context
-    const ctx = createContext(proc);
-
-    if (proc.logic && typeof proc.logic === 'function') {
-      // run logic; if it throws -> exit with code 1
-      const result = await proc.logic(proc.args, ctx);
-      // if process hasn't been killed already
-      if (!proc.cancelled && (proc.status !== 'done' && proc.status !== 'killed')) {
-        core.exitProcess(pid, typeof result === 'number' ? result : 0);
+    // Dacă procesul nu are un iterator, înseamnă că rulează pentru prima dată.
+    // Inițializăm generatorul.
+    if (!proc.iterator) {
+      if (typeof proc.logic !== 'function') {
+        throw new Error('Process logic is not a function.');
       }
-    } else {
-      // no logic -> immediate exit 0
-      core.exitProcess(pid, 0);
+      const ctx = createContext(proc);
+      proc.iterator = proc.logic(proc.args, ctx);
     }
+    
+    // Rulăm următoarea bucată de cod a procesului, până la următorul `yield`.
+    const result = await proc.iterator.next();
+
+    // Verificăm dacă generatorul s-a terminat.
+    if (result.done) {
+      // Dacă da, procesul s-a încheiat. Îl scoatem din sistem.
+      core.exitProcess(pid, typeof result.value === 'number' ? result.value : 0);
+    } else {
+      // Dacă nu, procesul a cedat controlul (`yield`).
+      // Îl punem înapoi în coadă pentru a fi reluat mai târziu.
+      proc.status = 'queued';
+      runQueue.push(pid);
+    }
+
   } catch (e) {
     log('error', `proc ${pid} failed: ${e.message}`);
-    core.exitProcess(pid, 1);
+    core.exitProcess(pid, 1); // Încheiem procesul cu cod de eroare
   }
 }
 
@@ -63,20 +81,19 @@ function createContext(proc) {
     pid: proc.pid,
     ppid: proc.ppid,
     meta: proc.meta || {},
-    // stdin/stdout handled by proc.pipeline logic in syscalls
     onSignal(sig, cb) {
       if (typeof cb === 'function') {
         handlers.set(sig, cb);
-        // register at core-level as well so external sendSignal can invoke
         core.registerSignalHandler(proc.pid, sig, cb);
       }
     },
     isCancelled() { return !!core.getProcess(proc.pid)?.cancelled; },
-    // allow checking queued signals
     drainSignals() {
       const p = core.getProcess(proc.pid);
       const q = p ? (p.signalQueue.splice(0, p.signalQueue.length)) : [];
       return q;
-    }
+    },
+    // NOU: Funcție ajutătoare pentru a ceda controlul
+    yield: () => new Promise(resolve => setTimeout(resolve, 0)),
   };
 }

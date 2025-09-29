@@ -120,151 +120,202 @@ export function initializeTerminal() {
 
   // builtins
   const builtinCommands = {
-    help: async () => `Available: help, clear, echo, date, ls, cat, cd, mkdir, touch, rm, mv, cp, ps, jobs, kill, sleep, dmesg, env, export, pwd, fg, bg`,
-    clear: async () => { output.innerHTML = ''; return ''; },
-    echo: async (args) => args.join(' ') + '\n',
-    date: async () => new Date().toString() + '\n',
-    pwd: async () => (cwd === '.' ? '/' : `/${cwd}`) + '\n',
-    env: async () => Object.entries(env).map(([k,v])=>`${k}=${v}`).join('\n') + '\n',
-    export: async (args) => {
-        for (const kv of args) {
+    help: async function* () {
+      yield; // Cedează controlul o dată
+      return `Available: help, clear, echo, date, ls, cat, cd, mkdir, touch, rm, mv, cp, ps, jobs, kill, sleep, dmesg, env, export, pwd, fg, bg, test_scheduler`;
+    },
+    clear: async function* () {
+      output.innerHTML = '';
+      yield;
+      return '';
+    },
+    echo: async function* (args) {
+      yield;
+      return args.join(' ') + '\n';
+    },
+    date: async function* () {
+      yield;
+      return new Date().toString() + '\n';
+    },
+    pwd: async function* () {
+      yield;
+      return (cwd === '.' ? '/' : `/${cwd}`) + '\n';
+    },
+    env: async function* () {
+      yield;
+      return Object.entries(env).map(([k,v])=>`${k}=${v}`).join('\n') + '\n';
+    },
+    export: async function* (args) {
+      for (const kv of args) {
         const [k,v=''] = kv.split('=',2);
         env[k] = v;
-        }
-        return '';
+        yield; // Cedează controlul în buclă
+      }
+      return '';
     },
-    dmesg: async () => dmesg().map(e=>`${e.ts} ${e.level} ${e.message}`).join('\n') + '\n',
-    ls: async (args) => {
-        // --- MODIFICAT: Folosește resolvePath ---
-        const path = resolvePath(args[0] || '.');
-        const data = await syscall('fs.readDir', { path, options: {} });
-        if (Array.isArray(data)) {
+    dmesg: async function* () {
+      yield;
+      return dmesg().map(e=>`${e.ts} ${e.level} ${e.message}`).join('\n') + '\n';
+    },
+    ls: async function* (args) {
+      yield; // Cedează înainte de apelul de sistem
+      const path = resolvePath(args[0] || '.');
+      const data = await syscall('fs.readDir', { path, options: {} });
+      if (Array.isArray(data)) {
         return data.map(item => (item.name || item)).join('  ') + '\n';
-        }
-        return JSON.stringify(data) + '\n';
+      }
+      return JSON.stringify(data) + '\n';
     },
-    cat: async (args, context) => {
-        if (args.length === 0) {
+    cat: async function* (args, context) {
+      if (args.length === 0) {
         if (context.stdin) return context.stdin;
         throw new Error('cat: missing file operand');
-        }
-        let out = '';
-        for (const f of args) {
-        // --- MODIFICAT: Folosește resolvePath ---
+      }
+      let out = '';
+      for (const f of args) {
         const path = resolvePath(f);
         const res = await syscall('fs.readFile', { path });
         out += res.content;
+        yield; // Cedează după fiecare fișier citit
+      }
+      return out;
+    },
+    cd: async function* (args) {
+      yield;
+      const target = args[0] || '.';
+      const newCwd = resolvePath(target);
+      await syscall('fs.readDir', { path: newCwd, options: {} }); 
+      cwd = newCwd;
+      return '';
+    },
+    sleep: async function* (args, context) {
+        const seconds = parseInt(args[0] || '1', 10);
+        if (isNaN(seconds) || seconds < 0) {
+            throw new Error('sleep: invalid time interval');
         }
-        return out;
+        const startTime = Date.now();
+        const endTime = startTime + seconds * 1000;
+        while (Date.now() < endTime) {
+            yield; // Cedează controlul în mod repetat
+        }
+        return `Slept for ${seconds} second(s)\n`;
     },
-    cd: async (args) => {
-        // --- MODIFICAT: Logică îmbunătățită pentru cd ---
-        const target = args[0] || '.';
-        const newCwd = resolvePath(target);
-        
-        // Verifică dacă directorul există înainte de a schimba
-        await syscall('fs.readDir', { path: newCwd, options: {} }); 
-        cwd = newCwd;
-        return '';
-    },
-    sleep: async (args) => {
-        const ms = parseInt(args[0] || '1000', 10);
-        await new Promise(r => setTimeout(r, ms));
-        return `Slept ${ms}ms\n`;
-    },
-    ps: async () => {
-        const table = await syscall('proc.list');
-        const lines = ['PID\tSTATUS\t\tCOMMAND'];
-        for (const pid of Object.keys(table)) {
+    ps: async function* () {
+      yield;
+      const table = await syscall('proc.list');
+      const lines = ['PID\tSTATUS\t\tCOMMAND'];
+      for (const pid of Object.keys(table)) {
         const p = table[pid];
-        lines.push(`${pid}\t${p.status.padEnd(8,' ')}\t${p.commandStr || p.name}`);
-        }
-        return lines.join('\n') + '\n';
+        lines.push(`${pid}\t${p.status.padEnd(8,' ')}\t${p.meta.fullCmd || p.name}`);
+        yield; // Cedează pentru fiecare linie procesată
+      }
+      return lines.join('\n') + '\n';
     },
-    jobs: async () => {
-        const list = [];
-        for (const jid in jobs) {
+    jobs: async function* () {
+      const list = [];
+      yield;
+      for (const jid in jobs) {
         const job = jobs[jid];
         list.push(`[${jid}] ${job.pids.join(' ')}\t${job.commandStr}`);
+      }
+      return (list.length ? list.join('\n') : 'No active jobs.') + '\n';
+    },
+    kill: async function* (args) {
+      yield;
+      const pid = parseInt(args[0],10);
+      if (isNaN(pid)) throw new Error('kill: usage: kill <pid>');
+      await syscall('proc.sendSignal', { pid, signal: 'SIGTERM' });
+      return '';
+    },
+    fg: async function* (args) {
+      yield;
+      const jid = (args[0] || '').replace('%','');
+      const job = jobs[jid];
+      if (!job) throw new Error(`fg: no such job ${jid}`);
+      write(job.commandStr + '\n');
+      const lastPid = job.pids[job.pids.length - 1];
+      await syscall('proc.wait', { pid: lastPid });
+      delete jobs[jid];
+      return '';
+    },
+    bg: async function* (args) {
+      yield;
+      const jid = (args[0] || '').replace('%','');
+      const job = jobs[jid];
+      if (!job) throw new Error(`bg: no such job ${jid}`);
+      write(`[${jid}] continued\n`);
+      return '';
+    },
+    mkdir: async function* (args) {
+      yield;
+      const pathArg = args.find(arg => !arg.startsWith('-'));
+      if (!pathArg) throw new Error('mkdir: missing operand');
+      const path = resolvePath(pathArg);
+      await syscall('fs.makeDir', { path, createParents: args.includes('-p') });
+      return '';
+    },
+    touch: async function* (args, context) {
+      yield;
+      if (args.length === 0) throw new Error('touch: missing file operand');
+      const path = resolvePath(args[0]);
+      const content = context.stdin || '';
+      const append = context.stdout ? context.stdout.append : false;
+      await syscall('fs.writeFile', { path, content, append: append });
+      return '';
+    },
+    rm: async function* (args) {
+      yield;
+      const force = args.includes('-f');
+      const pathArg = args.find(arg => !arg.startsWith('-'));
+      if (!pathArg) throw new Error('rm: missing operand');
+      const path = resolvePath(pathArg);
+      await syscall('fs.remove', { path, force });
+      return '';
+    },
+    mv: async function* (args) {
+      yield;
+      const [sourceArg, destinationArg] = args;
+      if (!sourceArg || !destinationArg) throw new Error('mv: missing operand');
+      const source = resolvePath(sourceArg);
+      const destination = resolvePath(destinationArg);
+      await syscall('fs.move', { source, destination });
+      return '';
+    },
+    cp: async function* (args) {
+      yield;
+      const recursive = args.includes('-r');
+      const nonFlagArgs = args.filter(arg => !arg.startsWith('-'));
+      const [sourceArg, destinationArg] = nonFlagArgs;
+      if (!sourceArg || !destinationArg) throw new Error('cp: missing operand');
+      const source = resolvePath(sourceArg);
+      const destination = resolvePath(destinationArg);
+      await syscall('fs.copy', { source, destination, recursive });
+      return '';
+    },
+    // Comanda de test pe care am adăugat-o data trecută
+    test_scheduler: async function* (args) {
+        const commandToRun = args[0];
+        if (!commandToRun || !builtinCommands[commandToRun]) {
+            throw new Error(`test_scheduler: unknown command '${commandToRun}'`);
         }
-        return (list.length ? list.join('\n') : 'No active jobs.') + '\n';
-    },
-    kill: async (args) => {
-        const pid = parseInt(args[0],10);
-        if (isNaN(pid)) throw new Error('kill: usage: kill <pid>');
-        await syscall('proc.sendSignal', { pid, signal: 'SIGTERM' });
-        return '';
-    },
-    fg: async (args) => {
-        const jid = (args[0] || '').replace('%','');
-        const job = jobs[jid];
-        if (!job) throw new Error(`fg: no such job ${jid}`);
-        write(job.commandStr + '\n');
-        const lastPid = job.pids[job.pids.length - 1];
-        await syscall('proc.wait', { pid: lastPid });
-        delete jobs[jid];
-        return '';
-    },
-    bg: async (args) => {
-        const jid = (args[0] || '').replace('%','');
-        const job = jobs[jid];
-        if (!job) throw new Error(`bg: no such job ${jid}`);
-        write(`[${jid}] continued\n`);
-        return '';
-    },
-    mkdir: async (args) => {
-        const pathArg = args.find(arg => !arg.startsWith('-'));
-        if (!pathArg) throw new Error('mkdir: missing operand');
-        // --- MODIFICAT: Folosește resolvePath ---
-        const path = resolvePath(pathArg);
-        await syscall('fs.makeDir', { path, createParents: args.includes('-p') });
-        return '';
-    },
-    touch: async (args, context) => {
-        if (args.length === 0) throw new Error('touch: missing file operand');
-        // --- MODIFICAT: Folosește resolvePath ---
-        const path = resolvePath(args[0]);
-        const content = context.stdin || '';
-        const append = context.stdout ? context.stdout.append : false;
-        await syscall('fs.writeFile', { path, content, append: append });
-        return '';
-    },
-    rm: async (args) => {
-        const force = args.includes('-f');
-        const pathArg = args.find(arg => !arg.startsWith('-'));
-        if (!pathArg) throw new Error('rm: missing operand');
-        // --- MODIFICAT: Folosește resolvePath ---
-        const path = resolvePath(pathArg);
-        await syscall('fs.remove', { path, force });
-        return '';
-    },
-    mv: async (args) => {
-        const [sourceArg, destinationArg] = args;
-        if (!sourceArg || !destinationArg) throw new Error('mv: missing operand');
-        // --- MODIFICAT: Folosește resolvePath ---
-        const source = resolvePath(sourceArg);
-        const destination = resolvePath(destinationArg);
-        await syscall('fs.move', { source, destination });
-        return '';
-    },
-    cp: async (args) => {
-        const recursive = args.includes('-r');
-        const nonFlagArgs = args.filter(arg => !arg.startsWith('-'));
-        const [sourceArg, destinationArg] = nonFlagArgs;
-        if (!sourceArg || !destinationArg) throw new Error('cp: missing operand');
-        // --- MODIFICAT: Folosește resolvePath ---
-        const source = resolvePath(sourceArg);
-        const destination = resolvePath(destinationArg);
-        await syscall('fs.copy', { source, destination, recursive });
-        return '';
+        const commandArgs = args.slice(1);
+        
+        const proc = await syscall('proc.spawn', {
+            name: commandToRun,
+            logic: builtinCommands[commandToRun],
+            args: commandArgs,
+            enqueue: true
+        });
+
+        yield;
+        return `Started background process ${proc.pid}: ${commandToRun} ${commandArgs.join(' ')}\n`;
     }
-    };
+  };
 
   async function resolveStdinForPipeline(parsed) {
     if (!parsed.pipeline || parsed.pipeline.length === 0) return null;
     const first = parsed.pipeline[0];
     if (first.stdinFile) {
-      // Calea a fost deja rezolvată în parseCommandLine
       const res = await syscall('fs.readFile', { path: first.stdinFile });
       return res.content;
     }
@@ -312,7 +363,7 @@ export function initializeTerminal() {
       write(`Error: ${errorMessage}\n`);
     }
   }
-  
+
   input.addEventListener('keydown', async (e) => {
     if (e.key === 'Enter') {
       const command = input.value;
