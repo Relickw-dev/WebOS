@@ -4,28 +4,27 @@ const fs = require('fs/promises');
 const path = require('path');
 const router = express.Router();
 
-
 const virtualRoot = path.join(process.cwd(), 'fs_root');
 
 // --- AICI ESTE MODIFICAREA CRITICĂ ---
-// Am înlocuit path.resolve cu path.join și path.normalize
-// pentru a combina corect calea de bază cu cea de la client,
-// chiar și atunci când calea de la client începe cu '/'.
+// Am ajustat funcția pentru a gestiona corect căile absolute trimise de client.
 function securePath(relativePath) {
-  const safeRelative = relativePath || '.';
-  
-  // path.join combină corect căile, prevenind interpretarea greșită.
-  const joinedPath = path.join(virtualRoot, safeRelative);
-  
-  // path.normalize rezolvă segmentele '..' și '.' pentru securitate sporită.
-  const normalizedPath = path.normalize(joinedPath);
+    let safeRelative = relativePath || '.';
+    
+    // Corectură: Dacă calea începe cu '/', eliminăm doar acel caracter.
+    // Astfel, path.join va combina corect '/cale/server' + 'cale/client'.
+    if (safeRelative.startsWith('/')) {
+        safeRelative = safeRelative.substring(1);
+    }
 
-  // Verificarea de securitate este esențială pentru a nu ieși din 'fs_root'.
-  if (!normalizedPath.startsWith(virtualRoot)) {
-    throw { code: 'EACCES', message: 'Access denied' };
-  }
-  
-  return normalizedPath;
+    const joinedPath = path.join(virtualRoot, safeRelative);
+    const normalizedPath = path.normalize(joinedPath);
+
+    if (!normalizedPath.startsWith(virtualRoot)) {
+        throw { code: 'EACCES', message: 'Access denied' };
+    }
+    
+    return normalizedPath;
 }
 
 router.post('/files', async (req, res) => {
@@ -52,18 +51,12 @@ router.post('/files', async (req, res) => {
 
 router.post('/cat', async (req, res) => {
   try {
-    const rel = req.body.path; // Citim calea din corpul cererii POST
+    const rel = req.body.path;
     if (!rel) throw { code: 'EINVAL', message: 'cat: missing operand' };
     const abs = securePath(rel);
     const stat = await fs.stat(abs);
     if (stat.isDirectory()) throw { code: 'EISDIR', message: 'Is a directory' };
     const content = await fs.readFile(abs, 'utf8');
-    // Răspunsul este un JSON, dar clientul (syscall 'stdout') așteaptă un string direct.
-    // Presupunând că 'requestJson' pe client extrage 'content', lăsăm așa deocamdată.
-    // Clientul va primi { content: "..." }, iar funcția `vfs.read` va trebui să returneze `body.content`.
-    // Să verificăm client.js... da, `readFile` returnează tot obiectul.
-    // Iar în `cat.js`, `syscall('vfs.read', { path })` primește acest obiect.
-    // Vom ajusta și client.js pentru a fi mai curat.
     res.json({ content });
   } catch (e) {
     res.status(400).json({ code: e.code || 'EIO', error: e.message || 'cat error' });
@@ -117,20 +110,16 @@ router.post('/touch', async (req, res) => {
 
 router.post('/rm', async (req, res) => {
   try {
-    // Citim toți parametrii necesari din corpul cererii.
     const { path: rel, force, recursive } = req.body;
     if (!rel) throw { code: 'EINVAL', message: 'rm: missing operand' };
     
     const abs = securePath(rel);
     
-    // Verificăm dacă ținta este un director.
     const stat = await fs.stat(abs);
     if (stat.isDirectory() && !recursive) {
-        // Dacă este director și nu s-a specificat '-r', returnăm eroare.
         throw { code: 'EISDIR', message: 'Is a directory' };
     }
 
-    // Apelăm fs.rm cu opțiunile corecte primite de la client.
     await fs.rm(abs, { recursive: !!recursive, force: !!force });
     res.json({ success: true });
   } catch (e) { 

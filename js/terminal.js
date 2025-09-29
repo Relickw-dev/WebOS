@@ -118,12 +118,52 @@ function newPromptLine() {
     terminalOutput.scrollTop = terminalOutput.scrollHeight;
 }
 
+function resolvePath(target, base) {
+    const baseParts = base === '/' ? [] : base.split('/').filter(p => p);
+    const targetParts = target.split('/').filter(p => p);
+    let parts = target.startsWith('/') ? [] : baseParts;
+    for (const part of targetParts) {
+        if (part === '..') {
+            if (parts.length > 0) {
+                parts.pop();
+            }
+        } else if (part !== '.') {
+            parts.push(part);
+        }
+    }
+    return '/' + parts.join('/');
+}
+
 async function executeCommand(commandString) {
     currentLine.style.display = 'none';
 
     try {
         const pipeline = parseCommand(commandString);
         if (pipeline.length === 0) {
+            newPromptLine();
+            return;
+        }
+
+        const command = pipeline[0];
+
+        if (command.name === 'cd') {
+            if (pipeline.length > 1) {
+                throw new Error("cd: cannot be used in a pipeline.");
+            }
+            
+            const targetPath = command.args.length > 0 ? command.args[0] : '/';
+            const newPath = resolvePath(targetPath, currentDirectory);
+
+            try {
+                const stats = await syscall('vfs.stat', { path: newPath });
+                if (stats.type !== 'dir') {
+                    logToTerminal({ type: 'error', message: `cd: not a directory: ${targetPath}` });
+                } else {
+                    currentDirectory = newPath;
+                }
+            } catch (e) {
+                logToTerminal({ type: 'error', message: `cd: no such file or directory: ${targetPath}` });
+            }
             newPromptLine();
             return;
         }
@@ -156,22 +196,11 @@ async function executeCommand(commandString) {
             stage.logicPath = commandLogicPaths[stage.name];
         }
         
-        // --- ÎNCEPUT MODIFICĂRI ---
-        
-        // Definim un callback care inspectează codul de ieșire.
-        const onDoneCallback = (exitCode) => {
-            // Verificăm dacă exitCode este un obiect și are cheia 'new_cwd'.
-            if (typeof exitCode === 'object' && exitCode !== null && exitCode.new_cwd) {
-                currentDirectory = exitCode.new_cwd;
-            }
-            // Indiferent de rezultat, afișăm prompt-ul nou.
+        const onDoneCallback = () => {
             newPromptLine();
         };
 
-        // Apelăm exec pasând callback-ul și directorul curent.
         await exec(pipeline, onStdout, onDoneCallback, currentDirectory);
-        
-        // --- SFÂRȘIT MODIFICĂRI ---
         
     } catch (e) {
         logToTerminal({ type: 'error', message: e.message });

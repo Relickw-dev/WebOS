@@ -12,7 +12,10 @@ async function requestJson(endpoint, options = {}) {
   return body;
 }
 
-export async function writeFile(path, content='', append=false) {
+// --- TOATE FUNCȚIILE SUNT MODIFICATE PENTRU A ACCEPTA UN OBIECT 'params' ---
+
+export async function writeFile(params) {
+  const { path, content = '', append = false } = params;
   return await requestJson('touch', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -20,37 +23,66 @@ export async function writeFile(path, content='', append=false) {
   });
 }
 
-export async function readDir(path, opts) {
-  return await requestJson('files', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ path, options: opts }) });
+export async function readDir(params) {
+  const { path, options } = params;
+  return await requestJson('files', { 
+      method: 'POST', 
+      headers:{'Content-Type':'application/json'}, 
+      body: JSON.stringify({ path, options }) 
+    });
 }
-export async function readFile(path) {
-  // CORECTURĂ: Am adăugat `.content` la final pentru a extrage
-  // doar textul din răspunsul JSON de la server.
+
+export async function readFile(params) {
+  const { path } = params;
   const body = await requestJson(`cat`, { 
     method: 'POST', 
     headers:{'Content-Type':'application/json'}, 
     body: JSON.stringify({ path }) 
   });
-  return body.content; // Extragem și returnăm direct conținutul
+  return body.content;
 }
-export async function stat(path) {
+
+export async function stat(params) {
+  const { path } = params;
   return await requestJson('stat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path })
   });
 }
-export async function mkdir(path, createParents=false) {
-  return await requestJson('mkdir', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ path, createParents }) });
-}
-export async function remove(path, force = false, recursive = false) {
-    return requestJson('rm', {method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ path, force, recursive }) });
-}
-export async function cp(source, destination, recursive=false) {
-  return await requestJson('copy', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ source, destination, recursive }) });
-}
-export async function mv(source, destination) {
-  return await requestJson('mv', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ source, destination }) });
+
+export async function mkdir(params) {
+  const { path, createParents = false } = params;
+  return await requestJson('mkdir', { 
+      method: 'POST', 
+      headers:{'Content-Type':'application/json'}, 
+      body: JSON.stringify({ path, createParents }) 
+    });
 }
 
-console.log('[DEBUG] Modulul js/vfs/client.js a fost încărcat și exportă funcțiile.');
+export async function remove(params) {
+    const { path, force = false, recursive = false } = params;
+    return requestJson('rm', {
+        method: 'POST', 
+        headers:{'Content-Type':'application/json'}, 
+        body: JSON.stringify({ path, force, recursive }) 
+    });
+}
+
+export async function cp(params) {
+  const { source, destination, recursive = false } = params;
+  return await requestJson('copy', { 
+      method: 'POST', 
+      headers:{'Content-Type':'application/json'}, 
+      body: JSON.stringify({ source, destination, recursive }) 
+    });
+}
+
+export async function mv(params) {
+  const { source, destination } = params;
+  return await requestJson('mv', { 
+      method: 'POST', 
+      headers:{'Content-Type':'application/json'}, 
+      body: JSON.stringify({ source, destination }) 
+    });
+}

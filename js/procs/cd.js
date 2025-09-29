@@ -29,22 +29,20 @@ function resolvePath(target, base) {
 
 /**
  * Logica pentru comanda 'cd' (change directory).
- * Schimbă directorul curent al terminalului, având o structură similară cu 'cat.js'.
- * @param {string[]} args - Argumentele comenzii. Primul argument este calea țintă.
+ * Schimbă directorul curent al terminalului.
+ * CORECTURĂ: Am eliminat apelurile la `exit()` și folosim `return`
+ * pentru a comunica codul de ieșire, eliminând ambiguitatea.
+ * @param {string[]} args - Argumentele comenzii.
  * @param {object} context - Contextul de execuție al procesului.
- * @param {function} context.syscall - Funcția pentru a apela syscalls.
- * @param {MessagePort} context.stderr - Portul pentru a scrie erorile.
- * @param {function} context.exit - Funcția pentru a termina procesul.
- * @param {string} context.cwd - Directorul de lucru curent.
- * @returns {Promise<number>} Exit code (0 pentru succes, 1 pentru eroare).
+ * @returns {Promise<number|object>} Exit code (0 sau 1) sau un obiect { new_cwd: '...' } pentru succes.
  */
 export default async function cdLogic(args, context) {
-    const { syscall, stderr, exit, cwd } = context;
+    const { syscall, stderr, cwd } = context;
 
-    // 'cd' fără argumente este tratat ca un succes, ducând la '/'.
+    // 'cd' fără argumente duce la rădăcină.
     if (args.length === 0) {
-        exit({ new_cwd: '/' });
-        return 0;
+        // În loc de exit(), returnăm direct obiectul așteptat de terminal.
+        return { new_cwd: '/' };
     }
 
     const targetPath = args[0];
@@ -55,16 +53,15 @@ export default async function cdLogic(args, context) {
         
         if (stats.type !== 'dir') {
             stderr.postMessage(`cd: not a directory: ${targetPath}\n`);
-            return 1; // Cod de ieșire pentru eroare
+            return 1; // Returnăm codul de eroare.
         }
 
-        // Succes: Trimitem noua cale și ieșim cu codul 0.
-        exit({ new_cwd: newPath });
-        return 0; // Cod de ieșire pentru succes
+        // Succes: Returnăm noua cale.
+        return { new_cwd: newPath };
 
     } catch (e) {
         // Orice eroare de la syscall (ex: calea nu există) este prinsă aici.
         stderr.postMessage(`cd: no such file or directory: ${targetPath}\n`);
-        return 1; // Cod de ieșire pentru eroare
+        return 1; // Returnăm codul de eroare.
     }
 }
