@@ -36,8 +36,12 @@ export async function readFile(path) {
 export async function mkdir(path, createParents=false) {
   return await requestJson('mkdir', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ path, createParents }) });
 }
-export async function rm(path, force=false) {
-  return await requestJson('rm', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ path, force }) });
+export async function remove(path, force = false, recursive = false) {
+    // Endpoint-ul de pe server este '/rm' (conform fs_api.js)
+    return await requestJson('/rm', {
+        method: 'POST',
+        body: { path, force, recursive },
+    });
 }
 export async function cp(source, destination, recursive=false) {
   return await requestJson('copy', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ source, destination, recursive }) });

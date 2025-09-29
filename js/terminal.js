@@ -1,5 +1,6 @@
 // File: js/terminal.js
-import { on, exec } from './kernel/core.js'; // Schimbare: Am importat 'exec'
+import { on, exec } from './kernel/core.js';
+import { syscall } from './kernel/syscalls.js';
 
 let terminalOutput;
 let terminalInput;
@@ -130,10 +131,8 @@ async function executeCommand(commandString) {
             return;
         }
 
-        // --- MODIFICARE CHEIE ---
-        // Verificăm dacă ultima comandă din pipeline are o redirectare.
         const lastStage = pipeline[pipeline.length - 1];
-        let onStdout = (data) => logToTerminal(data); // Default: afișează pe ecran
+        let onStdout = (data) => logToTerminal(data);
 
         if (lastStage.redirect) {
             const { op, file } = lastStage.redirect;
@@ -141,18 +140,18 @@ async function executeCommand(commandString) {
                 throw new Error('Syntax error: No file specified for redirection.');
             }
             
-            // Creăm un nou handler pentru stdout care scrie în fișier.
             onStdout = async (data) => {
-                const content = (typeof data === 'string' ? data : JSON.stringify(data)) + '\n';
-                await exec([{
-                    name: 'touch', // Folosim logica existentă din `touch` pentru a scrie
-                    logicPath: commandLogicPaths['touch'],
-                    args: [file, content, op === '>>'] // [path, content, append]
-                }]);
+                const content = typeof data === 'string' ? data : JSON.stringify(data);
+                if (content) {
+                    await syscall('vfs.write', {
+                        path: file,
+                        content: content,
+                        append: op === '>>'
+                    });
+                }
             };
         }
         
-        // Atribuim fiecărei comenzi calea către logica sa.
         for (const stage of pipeline) {
             if (!commandLogicPaths[stage.name]) {
                 throw new Error(`Command not found: ${stage.name}`);
