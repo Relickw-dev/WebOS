@@ -20,10 +20,36 @@ export function initializeTerminal() {
   const env = { USER: 'user', HOME: '/', SHELL: '/bin/webos' };
   const commandHistory = [];
   let historyIndex = -1;
-  let cwd = '.';
+  let cwd = '.'; // Current Working Directory
   let jobs = {};
   let nextJobId = 1;
   let fgPids = []; // foreground pids for Ctrl+C
+
+  // --- MODIFICARE CHEIE: Funcție pentru rezolvarea căilor ---
+  // Această funcție combină directorul curent (cwd) cu calea dată.
+  function resolvePath(targetPath) {
+    if (targetPath.startsWith('/')) {
+      // Cale absolută, pornește de la rădăcină
+      return targetPath.substring(1) || '.';
+    }
+    
+    // Construiește calea completă și normalizeaz-o
+    const newPath = (cwd === '.' ? '' : cwd + '/') + targetPath;
+    const parts = newPath.split('/');
+    const resolvedParts = [];
+    
+    for (const part of parts) {
+      if (part === '.' || part === '') continue;
+      if (part === '..') {
+        resolvedParts.pop();
+      } else {
+        resolvedParts.push(part);
+      }
+    }
+    
+    return resolvedParts.join('/') || '.';
+  }
+
 
   function write(msg) {
     if (msg === null || msg === undefined || msg === '') return;
@@ -60,12 +86,12 @@ export function initializeTerminal() {
         const t = tokens[i];
         if (t === '>') {
           const file = tokens[++i];
-          stdout = { type: 'redirect', file, append: false };
+          stdout = { type: 'redirect', file: resolvePath(file), append: false }; // Rezolvă calea
         } else if (t === '>>') {
           const file = tokens[++i];
-          stdout = { type: 'redirect', file, append: true };
+          stdout = { type: 'redirect', file: resolvePath(file), append: true }; // Rezolvă calea
         } else if (t === '<') {
-          stdinFile = tokens[++i];
+          stdinFile = resolvePath(tokens[++i]); // Rezolvă calea
         } else {
           args.push(t);
         }
@@ -109,7 +135,8 @@ export function initializeTerminal() {
     },
     dmesg: async () => dmesg().map(e=>`${e.ts} ${e.level} ${e.message}`).join('\n') + '\n',
     ls: async (args) => {
-        const path = args[0] ? args[0] : cwd;
+        // --- MODIFICAT: Folosește resolvePath ---
+        const path = resolvePath(args[0] || '.');
         const data = await syscall('fs.readDir', { path, options: {} });
         if (Array.isArray(data)) {
         return data.map(item => (item.name || item)).join('  ') + '\n';
@@ -123,15 +150,21 @@ export function initializeTerminal() {
         }
         let out = '';
         for (const f of args) {
-        const res = await syscall('fs.readFile', { path: f });
+        // --- MODIFICAT: Folosește resolvePath ---
+        const path = resolvePath(f);
+        const res = await syscall('fs.readFile', { path });
         out += res.content;
         }
         return out;
     },
     cd: async (args) => {
+        // --- MODIFICAT: Logică îmbunătățită pentru cd ---
         const target = args[0] || '.';
-        await syscall('fs.readDir', { path: target, options: {} });
-        cwd = target;
+        const newCwd = resolvePath(target);
+        
+        // Verifică dacă directorul există înainte de a schimba
+        await syscall('fs.readDir', { path: newCwd, options: {} }); 
+        cwd = newCwd;
         return '';
     },
     sleep: async (args) => {
@@ -180,47 +213,48 @@ export function initializeTerminal() {
         return '';
     },
     mkdir: async (args) => {
-        const path = args[0];
-        if (!path) throw new Error('mkdir: missing operand');
+        const pathArg = args.find(arg => !arg.startsWith('-'));
+        if (!pathArg) throw new Error('mkdir: missing operand');
+        // --- MODIFICAT: Folosește resolvePath ---
+        const path = resolvePath(pathArg);
         await syscall('fs.makeDir', { path, createParents: args.includes('-p') });
         return '';
     },
     touch: async (args, context) => {
         if (args.length === 0) throw new Error('touch: missing file operand');
-        const [path] = args;
+        // --- MODIFICAT: Folosește resolvePath ---
+        const path = resolvePath(args[0]);
         const content = context.stdin || '';
-        
-        // Determină dacă trebuie să facă append.
-        // Pentru 'touch', de obicei nu se face append, dar dacă este folosit cu redirectare, contextul ar trebui să indice acest lucru.
-        // Logica de redirectare din 'proc.pipeline' ar trebui să paseze corect flag-ul 'append'.
-        // Presupunând că 'context.stdout' ar conține informații despre redirectare:
         const append = context.stdout ? context.stdout.append : false;
-
-        // Corectarea apelului syscall pentru a respecta flag-ul 'append'
         await syscall('fs.writeFile', { path, content, append: append });
         return '';
     },
     rm: async (args) => {
         const force = args.includes('-f');
-        const path = args.find(arg => !arg.startsWith('-'));
-        if (!path) throw new Error('rm: missing operand');
+        const pathArg = args.find(arg => !arg.startsWith('-'));
+        if (!pathArg) throw new Error('rm: missing operand');
+        // --- MODIFICAT: Folosește resolvePath ---
+        const path = resolvePath(pathArg);
         await syscall('fs.remove', { path, force });
         return '';
     },
     mv: async (args) => {
-        const [source, destination] = args;
-        if (!source || !destination) throw new Error('mv: missing operand');
+        const [sourceArg, destinationArg] = args;
+        if (!sourceArg || !destinationArg) throw new Error('mv: missing operand');
+        // --- MODIFICAT: Folosește resolvePath ---
+        const source = resolvePath(sourceArg);
+        const destination = resolvePath(destinationArg);
         await syscall('fs.move', { source, destination });
         return '';
     },
     cp: async (args) => {
         const recursive = args.includes('-r');
         const nonFlagArgs = args.filter(arg => !arg.startsWith('-'));
-        const [source, destination] = nonFlagArgs;
-        if (!source || !destination) throw new Error('cp: missing operand');
-        if (!recursive && (await syscall('fs.readDir', { path: source, options: {} })).some(entry => entry.isDirectory)) {
-            throw new Error('cp: -r not specified for directory');
-        }
+        const [sourceArg, destinationArg] = nonFlagArgs;
+        if (!sourceArg || !destinationArg) throw new Error('cp: missing operand');
+        // --- MODIFICAT: Folosește resolvePath ---
+        const source = resolvePath(sourceArg);
+        const destination = resolvePath(destinationArg);
         await syscall('fs.copy', { source, destination, recursive });
         return '';
     }
@@ -230,6 +264,7 @@ export function initializeTerminal() {
     if (!parsed.pipeline || parsed.pipeline.length === 0) return null;
     const first = parsed.pipeline[0];
     if (first.stdinFile) {
+      // Calea a fost deja rezolvată în parseCommandLine
       const res = await syscall('fs.readFile', { path: first.stdinFile });
       return res.content;
     }
