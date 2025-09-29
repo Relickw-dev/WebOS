@@ -26,7 +26,8 @@ const commandLogicPaths = {
 
 // **Schimbare crucială: Inițializare autonomă**
 // Codul va aștepta automat ca DOM-ul să fie gata înainte de a se rula.
-window.addEventListener('DOMContentLoaded', () => {
+// Schimbăm selectorul de la '.terminal' la '#terminal'
+function initTerminal() {
     terminalOutput = document.getElementById('terminal-output');
     terminalInput = document.getElementById('terminal-input');
     currentLine = document.getElementById('current-line');
@@ -34,7 +35,7 @@ window.addEventListener('DOMContentLoaded', () => {
     // Verifică dacă elementele au fost găsite
     if (terminalOutput && terminalInput && currentLine) {
         terminalInput.addEventListener('keydown', handleInput);
-        document.querySelector('.terminal').addEventListener('click', () => terminalInput.focus());
+        document.getElementById('terminal').addEventListener('click', () => terminalInput.focus());
 
         setupTerminalSyscallHandlers();
         
@@ -43,7 +44,7 @@ window.addEventListener('DOMContentLoaded', () => {
     } else {
         console.error('Error: Terminal elements not found in the DOM.');
     }
-});
+}
 
 function setupTerminalSyscallHandlers() {
     on('terminal.clear', (params, resolve) => {
