@@ -27,7 +27,7 @@ const commandLogicPaths = {
 // **Schimbare crucială: Inițializare autonomă**
 // Codul va aștepta automat ca DOM-ul să fie gata înainte de a se rula.
 // Schimbăm selectorul de la '.terminal' la '#terminal'
-function initTerminal() {
+export function initTerminal() {
     terminalOutput = document.getElementById('terminal-output');
     terminalInput = document.getElementById('terminal-input');
     currentLine = document.getElementById('current-line');

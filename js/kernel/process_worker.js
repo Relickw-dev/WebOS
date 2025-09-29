@@ -1,71 +1,63 @@
 // File: js/kernel/process_worker.js
-let pid = -1;
-let args = [];
-let logic = null;
-let syscallCounter = 0;
-const pendingSyscalls = new Map();
-let stdinPort = null;
-let stdoutPort = null;
 
-function syscall(name, params) {
-  return new Promise((resolve, reject) => {
-    const callId = syscallCounter++;
-    pendingSyscalls.set(callId, { resolve, reject });
-    postMessage({ type: 'syscall', callId, name, params });
-  });
+let pid = -1;
+const ongoingSyscalls = new Map();
+let nextSyscallId = 0;
+
+function syscall(name, params = {}) {
+    return new Promise((resolve, reject) => {
+        const syscallId = nextSyscallId++;
+        ongoingSyscalls.set(syscallId, { resolve, reject });
+
+        postMessage({
+            type: 'syscall',
+            pid: pid,
+            syscall: {
+                id: syscallId,
+                name: name,
+                params: params
+            }
+        });
+    });
 }
 
 self.onmessage = async (e) => {
-  const { type, ...data } = e.data;
+    const { type, ...data } = e.data;
 
-  switch (type) {
-    case 'init':
-      pid = data.pid;
-      args = data.args;
-      stdinPort = data.stdin;
-      stdoutPort = data.stdout;
-      
-      try {
-        const module = await import(data.logicPath);
-        logic = module.default;
-        executeLogic();
-      } catch (err) {
-        postMessage({ type: 'error', message: `Failed to load logic: ${err.message}` });
-        self.close();
-      }
-      break;
+    if (type === 'init') {
+        pid = data.pid;
+        const { logicPath, args } = data.proc; // Această linie va funcționa acum
+        
+        try {
+            const module = await import(logicPath);
+            const commandFunction = module.default;
+            
+            if (typeof commandFunction !== 'function') {
+                throw new Error(`The module ${logicPath} does not have a default export that is a function.`);
+            }
 
-    case 'syscall_result':
-      if (pendingSyscalls.has(data.callId)) {
-        pendingSyscalls.get(data.callId).resolve(data.result);
-        pendingSyscalls.delete(data.callId);
-      }
-      break;
-      
-    case 'syscall_error':
-      if (pendingSyscalls.has(data.callId)) {
-        pendingSyscalls.get(data.callId).reject(new Error(data.error));
-        pendingSyscalls.delete(data.callId);
-      }
-      break;
-    
-    case 'set_stdout':
-        stdoutPort = data.port;
-        break;
-  }
+            const exitCode = await commandFunction(args, syscall);
+            
+            postMessage({ type: 'proc.exit', pid: pid, exitCode: exitCode || 0 });
+
+        } catch (error) {
+            postMessage({ 
+                type: 'proc.crash', 
+                pid: pid, 
+                error: { message: error.message, stack: error.stack }
+            });
+        }
+
+    } else if (type === 'syscall.result') {
+        const { id, result, error } = data;
+        const promise = ongoingSyscalls.get(id);
+        if (promise) {
+            if (error) {
+                promise.reject(new Error(error.message));
+            } else {
+                promise.resolve(result);
+            }
+            ongoingSyscalls.delete(id);
+        }
+    }
 };
-
-async function executeLogic() {
-  if (!logic) return;
-
-  const context = { syscall, stdin: stdinPort, stdout: stdoutPort };
-  
-  try {
-    const exitCode = await logic(args, context);
-    postMessage({ type: 'exit', code: exitCode || 0 });
-  } catch (err) {
-    postMessage({ type: 'error', message: err.message });
-  } finally {
-    self.close();
-  }
-}

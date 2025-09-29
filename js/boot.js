@@ -1,7 +1,8 @@
 // File: js/boot.js
-import { initKernel, setupProcessHandlers } from './kernel/core.js';
+import { initKernel } from './kernel/core.js';
 import { startScheduler } from './kernel/scheduler.js';
 import { log } from './utils/logger.js';
+import { initTerminal } from './terminal.js';
 
 export async function startBootSequence() {
   const output = document.getElementById('terminal-output');
@@ -12,15 +13,12 @@ export async function startBootSequence() {
   bootLog('Initializing kernel...');
   initKernel();
   await new Promise(r => setTimeout(r, 100));
-  
-  bootLog('Setting up process handlers...');
-  setupProcessHandlers();
-  await new Promise(r => setTimeout(r, 100));
 
   bootLog('Starting scheduler...');
   startScheduler();
   await new Promise(r => setTimeout(r, 100));
   bootLog('Launching shell...');
+  initTerminal();
   log('info', 'Boot completed');
 
   // --- SFÂRȘIT MODIFICARE ---
