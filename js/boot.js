@@ -1,26 +1,22 @@
-// js/boot.js
-
+// File: js/boot.js
+import { initKernel } from './kernel/core.js';
+import { startScheduler } from './kernel/scheduler.js';
 import { initializeTerminal } from './terminal.js';
+import { log } from './utils/logger.js';
 
-// Funcție ajutătoare pentru a scrie mesaje de boot
-function logToBootScreen(message) {
-    const output = document.getElementById('terminal-output');
-    output.innerHTML += `<p>${message}</p>`;
-}
-
-// Funcția principală a bootloader-ului
 export async function startBootSequence() {
-    const inputLine = document.querySelector('.prompt-line');
-    inputLine.style.display = 'none'; // Ascundem prompt-ul în timpul boot-ării
+  const output = document.getElementById('terminal-output');
+  function bootLog(msg) { output.innerHTML += `<p>${msg}</p>`; output.scrollTop = output.scrollHeight; }
 
-    logToBootScreen('BIOS v1.0 Initializing...');
-    logToBootScreen('Loading Shell...');
-
-    const output = document.getElementById('terminal-output');
-    output.innerHTML = ''; // Curățăm ecranul de mesajele de boot
-    
-    inputLine.style.display = 'flex'; // Re-afișăm prompt-ul
-
-    // Predăm controlul către terminal
-    initializeTerminal();
+  bootLog('BIOS v2.1 Initializing...');
+  await new Promise(r => setTimeout(r, 150));
+  bootLog('Initializing kernel...');
+  initKernel();
+  await new Promise(r => setTimeout(r, 100));
+  bootLog('Starting scheduler...');
+  startScheduler();
+  await new Promise(r => setTimeout(r, 100));
+  bootLog('Launching shell...');
+  initializeTerminal();
+  log('info', 'Boot completed');
 }
