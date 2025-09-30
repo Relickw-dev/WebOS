@@ -1,6 +1,7 @@
 // File: js/procs/help.js
 
-export default async function help(args, syscall) {
+// CORECTURĂ: Am schimbat 'syscall' cu '{ syscall }' pentru a destructura obiectul context.
+export default async function help(args, { syscall }) {
     const commandDescriptions = {
         'ls': 'List directory contents.',
         'cat': 'Concatenate and display files.',

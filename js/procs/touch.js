@@ -1,6 +1,9 @@
 // File: js/procs/touch.js
-async function main(args, syscall) {
+
+// CORECTURĂ: Am schimbat 'syscall' cu '{ syscall }' pentru a destructura obiectul context.
+async function main(args, { syscall }) {
     if (args.length === 0) {
+        // CORECTURĂ: Folosim syscall din context.
         await syscall('stderr', 'touch: missing file operand');
         return;
     }
