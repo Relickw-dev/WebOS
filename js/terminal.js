@@ -196,11 +196,11 @@ async function executeCommand(commandString) {
             stage.logicPath = commandLogicPaths[stage.name];
         }
         
-        const onDoneCallback = () => {
+        const onDoneCallback = (exitCode) => {
             newPromptLine();
         };
 
-        await exec(pipeline, onStdout, onDoneCallback, currentDirectory);
+        exec(pipeline, onStdout, onDoneCallback, currentDirectory);
         
     } catch (e) {
         logToTerminal({ type: 'error', message: e.message });

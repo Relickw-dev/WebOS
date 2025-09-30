@@ -1,7 +1,6 @@
 // File: js/kernel/core.js
 
 import { dmesg } from '../utils/logger.js';
-// CORECTURĂ: Am importat funcționalitățile VFS.
 import * as vfs from '../vfs/client.js';
 import { syscall } from './syscalls.js';
 
@@ -9,7 +8,7 @@ const eventListeners = new Map();
 const processes = new Map();
 let nextPid = 1;
 
-// --- Public Kernel API ---
+// --- Event System ---
 export function on(eventName, handler) {
     if (!eventListeners.has(eventName)) {
         eventListeners.set(eventName, []);
@@ -24,11 +23,11 @@ export function trigger(eventName, ...args) {
     }
 }
 
+// --- Kernel Init ---
 export function initKernel() {
     dmesg('Kernel initializing...');
     setupSyscallHandlers();
     dmesg('Syscall handlers registered.');
-
     dmesg('Kernel initialized.');
     return Promise.resolve();
 }
@@ -44,10 +43,14 @@ async function handleSyscallFromWorker(pid, syscallData) {
                 ? { ...params, pid }
                 : { data: params, pid };
 
-            const result = await new Promise((resolve, reject) => {
-                handlers[0](augmentedParams, resolve, reject);
-            });
-            
+            let result;
+            // rulează TOȚI handlerii, nu doar primul
+            for (const h of handlers) {
+                result = await new Promise((resolve, reject) => {
+                    h(augmentedParams, resolve, reject);
+                });
+            }
+
             const proc = processes.get(pid);
             if (proc) {
                 proc.worker.postMessage({ type: 'syscall.result', id, result });
@@ -55,15 +58,23 @@ async function handleSyscallFromWorker(pid, syscallData) {
         } catch (error) {
             const proc = processes.get(pid);
             if (proc) {
-                proc.worker.postMessage({ type: 'syscall.result', id, error: { message: error.message, stack: error.stack } });
+                proc.worker.postMessage({
+                    type: 'syscall.result',
+                    id,
+                    error: { message: error.message, stack: error.stack }
+                });
             }
         }
     } else {
         dmesg(`Unknown syscall '${name}' from pid ${pid}`, 'warn');
         const proc = processes.get(pid);
         if (proc) {
-           const error = new Error(`Unknown syscall: ${name}`);
-           proc.worker.postMessage({ type: 'syscall.result', id, error: { message: error.message, stack: error.stack } });
+            const error = new Error(`Unknown syscall: ${name}`);
+            proc.worker.postMessage({
+                type: 'syscall.result',
+                id,
+                error: { message: error.message, stack: error.stack }
+            });
         }
     }
 }
@@ -81,24 +92,25 @@ function handleProcExit(pid, exitCode) {
 }
 
 function setupSyscallHandlers() {
-    // Handler pentru procese
+    // Procese
     on('proc.pipeline', async (params, resolve) => {
         const { pipeline, onOutput, onDone, cwd } = params;
-        
+
         if (!pipeline || pipeline.length === 0) {
             if (onDone) onDone(0);
             return resolve();
         }
+
         const firstProc = pipeline[0];
         const newPid = nextPid++;
         const worker = new Worker('/js/kernel/process_worker.js', { type: 'module' });
 
         processes.set(newPid, {
             pid: newPid,
-            worker: worker,
+            worker,
             name: firstProc.name,
-            onOutput: onOutput,
-            onDone: onDone,
+            onOutput,
+            onDone,
         });
 
         worker.onmessage = (e) => {
@@ -127,13 +139,13 @@ function setupSyscallHandlers() {
             type: 'init',
             pid: newPid,
             proc: firstProc,
-            cwd: cwd // Adăugăm cwd aici
+            cwd
         });
 
         resolve(newPid);
     });
 
-    // Handler pentru I/O
+    // Stdout/Stderr
     on('stdout', (params, resolve) => {
         const proc = processes.get(params.pid);
         if (proc && proc.onOutput) {
@@ -141,7 +153,7 @@ function setupSyscallHandlers() {
         }
         resolve();
     });
-    
+
     on('stderr', (params, resolve) => {
         const proc = processes.get(params.pid);
         if (proc && proc.onOutput) {
@@ -150,8 +162,7 @@ function setupSyscallHandlers() {
         resolve();
     });
 
-    // --- CORECTURĂ: Am adăugat VFS Syscall Handlers ---
-    // Acestea conectează cererile proceselor la sistemul de fișiere.
+    // --- VFS Syscalls ---
     on('vfs.read', async ({ path }, resolve, reject) => {
         try {
             const data = await vfs.readFile(path);
@@ -164,7 +175,7 @@ function setupSyscallHandlers() {
     on('vfs.write', async ({ path, data }, resolve, reject) => {
         try {
             await vfs.writeFile(path, data);
-            resolve();
+            resolve({ success: true });
         } catch (e) {
             reject(e);
         }
@@ -173,12 +184,12 @@ function setupSyscallHandlers() {
     on('vfs.mkdir', async ({ path }, resolve, reject) => {
         try {
             await vfs.mkdir(path);
-            resolve();
+            resolve({ success: true });
         } catch (e) {
             reject(e);
         }
     });
-    
+
     on('vfs.readdir', async ({ path }, resolve, reject) => {
         try {
             const files = await vfs.readdir(path);
@@ -190,20 +201,15 @@ function setupSyscallHandlers() {
 
     on('vfs.rm', async ({ path, force, recursive }, resolve, reject) => {
         try {
-            // Apelăm funcția de ștergere din modulul VFS
             await vfs.remove(path, force, recursive);
-            
-            // Semnalăm că operațiunea s-a încheiat cu succes
             resolve({ success: true });
         } catch (e) {
-            // În caz de eroare, o transmitem mai departe
             reject(e);
         }
     });
 
     on('vfs.stat', async ({ path }, resolve, reject) => {
         try {
-            // Folosim clientul VFS, care va apela API-ul serverului.
             const stats = await vfs.stat(path);
             resolve(stats);
         } catch (e) {
@@ -212,11 +218,10 @@ function setupSyscallHandlers() {
     });
 }
 
-// Funcția 'exec' pentru compatibilitate cu terminal.js
-export function exec(pipeline, onOutput, onDone, cwd) { // Adăugăm cwd ca parametru
+// Funcția exec pentru terminal.js
+export function exec(pipeline, onOutput, onDone, cwd) {
     return new Promise((resolve, reject) => {
         try {
-            // Pasăm 'cwd' mai departe în eveniment
             trigger('proc.pipeline', { pipeline, onOutput, onDone, cwd }, resolve, reject);
         } catch (e) {
             console.error("Error triggering proc.pipeline from exec:", e);
